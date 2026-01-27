@@ -70,7 +70,7 @@ export class XMLCodeChunker {
         ignoreAttributes: false,
         attributeNamePrefix: '',
         textNodeName: '_text',
-        ignoreNameSpace: true, // Strip namespace prefixes
+        removeNSPrefix: true,
         parseAttributeValue: false,
         trimValues: true,
       });

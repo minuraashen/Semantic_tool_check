@@ -62,8 +62,7 @@ class EmbeddingService {
     try {
       console.log('Starting EmbeddingService...');
       
-      // Load ONNX model
-      const modelPath = path.join(__dirname, 'models', 'model_quantized.onnx');
+      const modelPath = path.resolve(__dirname, 'models', 'model_quantized.onnx');
       console.log(`Loading ONNX model from: ${modelPath}`);
       
       if (!fs.existsSync(modelPath)) {
@@ -231,11 +230,13 @@ class EmbeddingService {
       // Create input tensors
       const inputIds = new ort.Tensor('int64', BigInt64Array.from(tokenIds.map(id => BigInt(id))), [1, maxLength]);
       const attentionMask = new ort.Tensor('int64', BigInt64Array.from(tokenIds.map(id => id > 0 ? BigInt(1) : BigInt(0))), [1, maxLength]);
+      const tokenTypeIds = new ort.Tensor('int64', new BigInt64Array(maxLength).fill(BigInt(0)), [1, maxLength]);
       
       // Run inference
       const feeds = {
         input_ids: inputIds,
         attention_mask: attentionMask,
+        token_type_ids: tokenTypeIds,
       };
       
       const results = await this.session!.run(feeds);
