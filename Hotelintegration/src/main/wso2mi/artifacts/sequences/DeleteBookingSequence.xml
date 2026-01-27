@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sequence xmlns="http://ws.apache.org/ns/synapse" name="DeleteBookingSequence">
+    <log category="INFO">
+        <message>Deleting booking ${vars.bookingId}</message>
+    </log>
+    
+    <payloadFactory media-type="json">
+        <format>
+            {
+                "status": "success",
+                "message": "Booking ${vars.bookingId} deleted successfully"
+            }
+        </format>
+    </payloadFactory>
+    
+    <respond/>
+</sequence>

@@ -1,0 +1,23 @@
+{
+  "name": "embedding-service",
+  "version": "1.0.0",
+  "description": "Code embedding service for WSO2 MI XML files",
+  "main": "embedding-service.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/embedding-service.js"
+  },
+  "keywords": ["embedding", "vector", "search", "onnx"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "onnxruntime-node": "^1.17.0",
+    "fast-xml-parser": "^4.3.2",
+    "better-sqlite3": "^9.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/better-sqlite3": "^7.6.8",
+    "typescript": "^5.3.3"
+  }
+}

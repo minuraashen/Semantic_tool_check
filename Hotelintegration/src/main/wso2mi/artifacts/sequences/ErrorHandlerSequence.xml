@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sequence xmlns="http://ws.apache.org/ns/synapse" name="ErrorHandlerSequence">
+    <log category="ERROR">
+        <message>Error occurred: ${props.synapse.ERROR_MESSAGE}</message>
+    </log>
+    
+    <payloadFactory media-type="json">
+        <format>
+            {
+                "status": "error",
+                "errorCode": "${props.synapse.ERROR_CODE}",
+                "errorMessage": "${props.synapse.ERROR_MESSAGE}"
+            }
+        </format>
+    </payloadFactory>
+    
+    <variable name="HTTP_SC" value="500" type="STRING"/>
+    <respond/>
+</sequence>

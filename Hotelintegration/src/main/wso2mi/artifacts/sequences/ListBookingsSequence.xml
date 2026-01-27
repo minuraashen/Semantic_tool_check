@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sequence xmlns="http://ws.apache.org/ns/synapse" name="ListBookingsSequence">
+    <log category="INFO">
+        <message>Listing all bookings</message>
+    </log>
+    
+    <payloadFactory media-type="json">
+        <format>
+            {
+                "status": "success",
+                "totalBookings": 2,
+                "bookings": [
+                    {
+                        "bookingId": "BK001",
+                        "guestName": "John Doe",
+                        "roomType": "Deluxe Suite",
+                        "checkIn": "2024-02-01",
+                        "checkOut": "2024-02-05",
+                        "status": "confirmed"
+                    },
+                    {
+                        "bookingId": "BK002",
+                        "guestName": "Jane Smith",
+                        "roomType": "Standard Room",
+                        "checkIn": "2024-02-10",
+                        "checkOut": "2024-02-12",
+                        "status": "confirmed"
+                    }
+                ]
+            }
+        </format>
+    </payloadFactory>
+    
+    <respond/>
+</sequence>

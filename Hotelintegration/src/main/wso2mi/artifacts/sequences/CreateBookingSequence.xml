@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sequence xmlns="http://ws.apache.org/ns/synapse" name="CreateBookingSequence">
+    <log category="INFO">
+        <message>Creating booking for ${vars.guestName}</message>
+    </log>
+    
+    <payloadFactory media-type="json">
+        <format>
+            {
+                "status": "success",
+                "message": "Booking created successfully",
+                "booking": {
+                    "bookingId": "${vars.bookingId}",
+                    "guestName": "${vars.guestName}",
+                    "roomType": "${vars.roomType}",
+                    "checkIn": "${vars.checkIn}",
+                    "checkOut": "${vars.checkOut}",
+                    "status": "confirmed",
+                    "createdAt": "${formatDateTime(now(), 'yyyy-MM-dd HH:mm:ss')}"
+                }
+            }
+        </format>
+    </payloadFactory>
+    
+    <variable name="HTTP_SC" value="201" type="STRING"/>
+    <respond/>
+</sequence>

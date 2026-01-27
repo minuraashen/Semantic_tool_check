@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sequence xmlns="http://ws.apache.org/ns/synapse" name="GetBookingSequence">
+    <log category="INFO">
+        <message>Retrieving booking ${vars.bookingId}</message>
+    </log>
+    
+    <payloadFactory media-type="json">
+        <format>
+            {
+                "status": "success",
+                "booking": {
+                    "bookingId": "${vars.bookingId}",
+                    "guestName": "John Doe",
+                    "roomType": "Deluxe Suite",
+                    "checkIn": "2024-02-01",
+                    "checkOut": "2024-02-05",
+                    "status": "confirmed",
+                    "totalAmount": 500.00
+                }
+            }
+        </format>
+    </payloadFactory>
+    
+    <respond/>
+</sequence>

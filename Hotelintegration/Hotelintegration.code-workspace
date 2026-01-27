@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "SupermarketIntegration",
+			"path": "../SupermarketIntegration"
+		}
+	],
+	"settings": {}
+}

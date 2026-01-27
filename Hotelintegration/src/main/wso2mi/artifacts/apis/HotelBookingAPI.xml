@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<api xmlns="http://ws.apache.org/ns/synapse" name="HotelBookingAPI" context="/mi-hotels">
+    
+    <!-- Create Booking -->
+    <resource methods="POST" uri-template="/bookings">
+        <inSequence>
+            <variable name="bookingId" expression="${payload.bookingId}" type="STRING"/>
+            <variable name="guestName" expression="${payload.guestName}" type="STRING"/>
+            <variable name="roomType" expression="${payload.roomType}" type="STRING"/>
+            <variable name="checkIn" expression="${payload.checkIn}" type="STRING"/>
+            <variable name="checkOut" expression="${payload.checkOut}" type="STRING"/>
+            
+            <filter xpath="${exists(vars.bookingId) and exists(vars.guestName) and exists(vars.roomType)}">
+                <then>
+                    <sequence key="CreateBookingSequence"/>
+                </then>
+                <else>
+                    <payloadFactory media-type="json">
+                        <format>
+                            {
+                                "status": "error",
+                                "message": "Missing required fields: bookingId, guestName, or roomType"
+                            }
+                        </format>
+                    </payloadFactory>
+                    <variable name="HTTP_SC" value="400" type="STRING"/>
+                    <respond/>
+                </else>
+            </filter>
+        </inSequence>
+        <faultSequence>
+            <sequence key="ErrorHandlerSequence"/>
+        </faultSequence>
+    </resource>
+    
+    <!-- Get Booking by ID -->
+    <resource methods="GET" uri-template="/bookings/{bookingId}">
+        <inSequence>
+            <variable name="bookingId" expression="${params.pathParams.bookingId}" type="STRING"/>
+            <sequence key="GetBookingSequence"/>
+        </inSequence>
+        <faultSequence>
+            <sequence key="ErrorHandlerSequence"/>
+        </faultSequence>
+    </resource>
+    
+    <!-- Update Booking -->
+    <resource methods="PUT" uri-template="/bookings/{bookingId}">
+        <inSequence>
+            <variable name="bookingId" expression="${params.pathParams.bookingId}" type="STRING"/>
+            <sequence key="UpdateBookingSequence"/>
+        </inSequence>
+        <faultSequence>
+            <sequence key="ErrorHandlerSequence"/>
+        </faultSequence>
+    </resource>
+    
+    <!-- Delete Booking -->
+    <resource methods="DELETE" uri-template="/bookings/{bookingId}">
+        <inSequence>
+            <variable name="bookingId" expression="${params.pathParams.bookingId}" type="STRING"/>
+            <sequence key="DeleteBookingSequence"/>
+        </inSequence>
+        <faultSequence>
+            <sequence key="ErrorHandlerSequence"/>
+        </faultSequence>
+    </resource>
+    
+    <!-- List All Bookings -->
+    <resource methods="GET" uri-template="/bookings">
+        <inSequence>
+            <sequence key="ListBookingsSequence"/>
+        </inSequence>
+        <faultSequence>
+            <sequence key="ErrorHandlerSequence"/>
+        </faultSequence>
+    </resource>
+    
+</api>
