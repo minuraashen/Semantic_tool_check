@@ -1,0 +1,18 @@
+{
+  "type": "API",
+  "/deposit": {
+    "requests": [
+      {
+        "name": "sample1",
+        "contentType": "application/json",
+        "content": {
+          "currency": "EUR",
+          "amount": 100
+        },
+        "queryParams": {},
+        "pathParams": {}
+      }
+    ],
+    "defaultRequest": "sample1"
+  }
+}
