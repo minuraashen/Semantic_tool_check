@@ -1,20 +1,24 @@
 {
   "name": "embedding-service",
-  "version": "1.0.0",
-  "description": "Code embedding service for WSO2 MI XML files",
-  "main": "embedding-service.js",
+  "version": "2.0.0",
+  "description": "Background embedding service for WSO2 MI XML files with periodic watching",
+  "main": "dist/embedding-service/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/embedding-service.js",
-    "index": "ts-node index-hotel.ts",
-    "search": "ts-node search-demo.ts",
-    "dev": "ts-node"
+    "start": "npm run build && node dist/embedding-service/index.js",
+    "dev": "ts-node src/embedding-service/index.ts",
+    "search": "npm run build && node dist/retrieval/code_retrieve.js",
+    "search:dev": "ts-node src/retrieval/code_retrieve.ts",
+    "visualize": "npm run build && node dist/utils/visualize.js",
+    "visualize:dev": "ts-node src/utils/visualize.ts"
   },
   "keywords": [
     "embedding",
     "vector",
     "search",
-    "onnx"
+    "onnx",
+    "wso2",
+    "xml"
   ],
   "author": "",
   "license": "MIT",
