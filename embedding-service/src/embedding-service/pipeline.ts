@@ -58,17 +58,21 @@ export class Pipeline {
     const chunks = await this.chunker.chunkFile(filePath);
     console.log(`  Extracted ${chunks.length} chunks`);
 
+    // Check if file has existing chunks
     const existingChunks = this.db.getChunksByFile(filePath);
-    const existingMap = new Map(
-      existingChunks.map(c => [`${c.startLine}-${c.endLine}`, c])
-    );
+    
+    // If file exists and hash changed, delete all old chunks to avoid conflicts
+    if (existingChunks.length > 0) {
+      const existingHash = existingChunks[0].fileHash;
+      if (existingHash !== fileHash) {
+        console.log(`  File modified, deleting ${existingChunks.length} old chunks`);
+        this.db.deleteChunksByFile(filePath);
+      }
+    }
 
     const chunkIndexToDbId = new Map<number, number>();
 
     for (const chunk of chunks) {
-      const key = `${chunk.startLine}-${chunk.endLine}`;
-      const existing = existingMap.get(key);
-
       let parentDbId: number | null = null;
       if (chunk.parentChunkId !== null && chunkIndexToDbId.has(chunk.parentChunkId)) {
         parentDbId = chunkIndexToDbId.get(chunk.parentChunkId)!;
@@ -87,27 +91,10 @@ export class Pipeline {
         timestamp: Date.now(),
       };
 
-      if (!existing || existing.fileHash !== fileHash) {
-        const embedding = await this.embedder.embed(chunk.embeddingText);
-        
-        if (existing) {
-          this.db.updateChunk(existing.id, metadata, embedding);
-          chunkIndexToDbId.set(chunk.chunkIndex, existing.id);
-          console.log(`  Updated chunk at lines ${chunk.startLine}-${chunk.endLine}`);
-        } else {
-          const newId = this.db.insertChunk(metadata, embedding);
-          chunkIndexToDbId.set(chunk.chunkIndex, newId);
-          console.log(`  Inserted chunk at lines ${chunk.startLine}-${chunk.endLine}`);
-        }
-      } else {
-        chunkIndexToDbId.set(chunk.chunkIndex, existing.id);
-      }
-
-      existingMap.delete(key);
-    }
-
-    for (const [_, chunk] of existingMap) {
-      console.log(`  Deleted obsolete chunk at lines ${chunk.startLine}-${chunk.endLine}`);
+      const embedding = await this.embedder.embed(chunk.embeddingText);
+      const newId = this.db.insertChunk(metadata, embedding);
+      chunkIndexToDbId.set(chunk.chunkIndex, newId);
+      console.log(`  Inserted chunk at lines ${chunk.startLine}-${chunk.endLine}`);
     }
   }
 }

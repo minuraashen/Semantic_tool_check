@@ -22,14 +22,14 @@
                 <requestBodyType>JSON</requestBodyType>
                 <requestBodyJson>{
                     "fromCurrency": "${vars.currency}",
-                    "toCurrency": "USD"
+                    "toCurrency": "LKR"
                 }</requestBodyJson>
                 <responseVariable>conversionRate</responseVariable>
                 <overwriteBody>false</overwriteBody>
             </http.post>
             
             <variable name="rate" expression="${vars.conversionRate.rate}" type="DOUBLE"/>
-            <variable name="amountInUSD" expression="${vars.originalAmount * vars.rate}" type="DOUBLE"/>
+            <variable name="amountInLKR" expression="${vars.originalAmount * vars.rate}" type="DOUBLE"/>
             
             <payloadFactory media-type="json">
                 <format>{
@@ -38,7 +38,7 @@
                     "transaction": {
                         "originalAmount": ${vars.originalAmount},
                         "currency": "${vars.currency}",
-                        "amountInUSD": ${vars.amountInUSD},
+                        "amountInLKR": ${vars.amountInUSD},
                         "conversionRate": ${vars.rate}
                     }
                 }</format>
@@ -67,7 +67,7 @@
                 <format>{
                     "accountId": "${vars.accountId}",
                     "balance": 5000.00,
-                    "currency": "USD",
+                    "currency": "LKR",
                     "lastUpdated": "${formatDateTime(now(), 'yyyy-MM-dd HH:mm:ss')}"
                 }</format>
             </payloadFactory>
