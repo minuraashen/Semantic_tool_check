@@ -63,9 +63,16 @@ export class Pipeline {
       existingChunks.map(c => [`${c.startLine}-${c.endLine}`, c])
     );
 
+    const chunkIndexToDbId = new Map<number, number>();
+
     for (const chunk of chunks) {
       const key = `${chunk.startLine}-${chunk.endLine}`;
       const existing = existingMap.get(key);
+
+      let parentDbId: number | null = null;
+      if (chunk.parentChunkId !== null && chunkIndexToDbId.has(chunk.parentChunkId)) {
+        parentDbId = chunkIndexToDbId.get(chunk.parentChunkId)!;
+      }
 
       const metadata: ChunkMetadata = {
         filePath: chunk.filePath,
@@ -76,7 +83,7 @@ export class Pipeline {
         chunkIndex: chunk.chunkIndex,
         startLine: chunk.startLine,
         endLine: chunk.endLine,
-        parentChunkId: chunk.parentChunkId,
+        parentChunkId: parentDbId,
         timestamp: Date.now(),
       };
 
@@ -85,11 +92,15 @@ export class Pipeline {
         
         if (existing) {
           this.db.updateChunk(existing.id, metadata, embedding);
+          chunkIndexToDbId.set(chunk.chunkIndex, existing.id);
           console.log(`  Updated chunk at lines ${chunk.startLine}-${chunk.endLine}`);
         } else {
-          this.db.insertChunk(metadata, embedding);
+          const newId = this.db.insertChunk(metadata, embedding);
+          chunkIndexToDbId.set(chunk.chunkIndex, newId);
           console.log(`  Inserted chunk at lines ${chunk.startLine}-${chunk.endLine}`);
         }
+      } else {
+        chunkIndexToDbId.set(chunk.chunkIndex, existing.id);
       }
 
       existingMap.delete(key);

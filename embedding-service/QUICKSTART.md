@@ -214,12 +214,3 @@ Top 5 results:
 4. Modify an XML file and watch it auto-update
 5. Add more projects to `projectFolders` in config
 
-## Old Files
-
-The following old files can be deleted after verifying the new service works:
-- `embedding-service.ts`
-- `vector-store.ts`
-- `xml-chunker.ts`
-- `search-demo.ts`
-
-These have been replaced by the new modular structure in `src/`.

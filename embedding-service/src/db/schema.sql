@@ -11,8 +11,7 @@ CREATE TABLE IF NOT EXISTS chunks (
   end_line INTEGER NOT NULL,
   parent_chunk_id INTEGER,
   embedding BLOB NOT NULL,
-  timestamp INTEGER NOT NULL,
-  FOREIGN KEY (parent_chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+  timestamp INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_file_path ON chunks(file_path);

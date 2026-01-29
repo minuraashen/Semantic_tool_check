@@ -44,8 +44,8 @@ export class CodeRetrieval {
     }));
   }
 
-  close(): void {
-    this.embedder.close();
+  async close(): Promise<void> {
+    await this.embedder.close();
     this.db.close();
   }
 }
@@ -64,7 +64,7 @@ async function main() {
   const retrieval = new CodeRetrieval();
   await retrieval.initialize();
 
-  const results = await retrieval.search(query, 10);
+  const results = await retrieval.search(query, 20);
 
   if (results.length === 0) {
     console.log('No results found');
@@ -81,7 +81,7 @@ async function main() {
     });
   }
 
-  retrieval.close();
+  await retrieval.close();
 }
 
 if (require.main === module) {

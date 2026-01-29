@@ -53,7 +53,7 @@ export class EmbeddingService {
       this.intervalId = null;
     }
 
-    this.embedder.close();
+    await this.embedder.close();
     this.db.close();
     this.isInitialized = false;
     console.log('Embedding Service stopped');
@@ -89,6 +89,15 @@ export async function startService(): Promise<void> {
       await service.stop();
     }
     process.exit(0);
+  });
+
+  process.on('uncaughtException', (error) => {
+    if (error.message.includes('mutex lock failed')) {
+      process.exit(0);
+    } else {
+      console.error('Uncaught exception:', error);
+      process.exit(1);
+    }
   });
 }
 
