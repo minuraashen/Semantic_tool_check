@@ -108,6 +108,20 @@ npm run search "error handling in API"
 | embedding | BLOB | Float32Array embedding vector (384 dimensions) |
 | timestamp | INTEGER | Last update timestamp |
 
+### Example Chunk Table (First 10 chunks)
+id  resource_name   resource_type  chunk_type      start_line  end_line  parent_chunk_id
+--  --------------  -------------  --------------  ----------  --------  ---------------
+1   api             api            api             2           150                      
+2   resource        resource       resource        3           12        1              
+3   inSequence      api            inSequence      4           9         2              
+4   payloadFactory  api            payloadFactory  5           7         3              
+5   respond         api            respond         1           1         3              
+6   faultSequence   api            faultSequence   10          11        2              
+7   resource        resource       resource        14          60        1              
+8   amountInUSD     api            inSequence      15          47        7              
+9   variable        api            variable        16          16        8              
+10  variable        api            variable        17          17        8              
+
 ## Chunking Strategy
 
 The service creates a hierarchical chunk graph:

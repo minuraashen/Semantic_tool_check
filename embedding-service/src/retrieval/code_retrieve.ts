@@ -64,7 +64,7 @@ async function main() {
   const retrieval = new CodeRetrieval();
   await retrieval.initialize();
 
-  const results = await retrieval.search(query, 20);
+  const results = await retrieval.search(query, 10);
 
   if (results.length === 0) {
     console.log('No results found');

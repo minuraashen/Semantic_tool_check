@@ -21,9 +21,11 @@ interface LineRange {
 
 export class XMLChunker {
   private chunkCounter = 0;
+  private lastSearchPosition: number = 0;
 
   async chunkFile(filePath: string): Promise<XMLChunk[]> {
     this.chunkCounter = 0;
+    this.lastSearchPosition = 0; // Reset for each file
     const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
     const lines = xmlContent.split('\n');
     
@@ -208,13 +210,16 @@ export class XMLChunker {
     let endLine = -1;
     let depth = 0;
 
-    for (let i = 0; i < lines.length; i++) {
+    // Start searching from the last found position to avoid duplicates
+    for (let i = this.lastSearchPosition; i < lines.length; i++) {
       const line = lines[i];
       
       if (startLine === -1) {
         const openPattern = new RegExp(`<${tagName}[\\s>]`);
         if (openPattern.test(line)) {
           startLine = i + 1;
+          this.lastSearchPosition = i + 1; // Update last position
+          
           if (line.includes('/>')) {
             endLine = i + 1;
             break;
