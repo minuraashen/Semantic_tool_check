@@ -1,7 +1,24 @@
-import { config, getProjectPaths } from '../config/paths';
+import * as path from 'path';
 import { SQLiteDB } from '../db/sqlite';
 import { Embedder } from './embedder';
 import { Pipeline } from './pipeline';
+
+// Configuration
+const rootDir = path.resolve(__dirname, '../../');
+const config = {
+  pollIntervalMs: 10000,
+  workspaceRoot: path.resolve(rootDir, '../'),
+  projectFolders: ['BankIntegration', 'Hotelintegration'],
+  artifactsSubPath: 'src/main/wso2mi/artifacts',
+  dbPath: path.resolve(rootDir, 'data/embeddings.db'),
+  modelPath: path.resolve(rootDir, 'models/model_quantized.onnx'),
+};
+
+function getProjectPaths(): string[] {
+  return config.projectFolders.map(folder => 
+    path.join(config.workspaceRoot, folder, config.artifactsSubPath)
+  );
+}
 
 export class EmbeddingService {
   private db: SQLiteDB;

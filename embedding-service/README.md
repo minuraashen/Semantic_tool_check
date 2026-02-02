@@ -1,17 +1,16 @@
 # Embedding Service
 
-Background service for generating and managing code embeddings from WSO2 MI XML configuration files.
+Background service for generating and managing code embeddings from WSO2 MI XML configuration files with semantic chunking and cross-artifact tracking.
 
 ## Features
 
-- **Hierarchical XML Chunking**: Recursively chunks XML files by resources, sequences, and mediators
-- **Graph-based Structure**: Maintains parent-child relationships between chunks
-- **Incremental Updates**: Only re-processes modified chunks, not entire files
-- **Periodic Watching**: Monitors file changes every 10 seconds (configurable)
-- **Hash-based Change Detection**: Uses SHA-256 hashing to detect content changes
-- **SQLite Storage**: Stores embeddings and metadata without raw XML content
-- **ONNX Runtime**: Uses all-MiniLM-L6-v2 model for embedding generation
-- **Semantic Search**: CLI tool for querying the embedding database
+- **Semantic XML Chunking**: Chunks at semantic boundaries (resource, inSequence, filter, switch, sequence, payloadFactory)
+- **Merkle Tree Change Detection**: SHA-256 content hashing for efficient incremental updates (80-95% embedding reuse)
+- **Cross-Artifact Tracking**: Automatically tracks references between sequences, local-entries, endpoints, and templates
+- **Periodic Watching**: Monitors file changes every 10 seconds
+- **SQLite Storage**: Stores embeddings with rich metadata (semantic type, intent, context, references)
+- **ONNX Runtime**: Uses all-MiniLM-L6-v2 model (384 dimensions)
+- **Semantic Search**: CLI tool for querying with similarity scoring
 
 ## Architecture
 
@@ -20,18 +19,16 @@ src/
 ├── embedding-service/       # Core embedding daemon
 │   ├── index.ts            # Entry point & service lifecycle
 │   ├── watcher.ts          # File system monitoring
-│   ├── chunker.ts          # Hierarchical XML chunking
+│   ├── chunker.ts          # Semantic XML chunking
 │   ├── embedder.ts         # ONNX model interface
-│   └── pipeline.ts         # Orchestration logic
+│   └── pipeline.ts         # Orchestration with Merkle tree
 ├── retrieval/              # Search functionality
-│   └── code_retrieve.ts    # Semantic search CLI
-├── db/                     # Database layer
-│   ├── sqlite.ts           # SQLite operations
-│   └── schema.sql          # Database schema
-├── config/                 # Configuration
-│   └── paths.ts            # Paths & settings
-└── utils/                  # Utilities
-    └── hash.ts             # Content hashing
+│   ├── code_retrieve_enhanced.ts  # Advanced search with relationships
+│   └── search.ts           # CLI search interface
+└── db/                     # Database layer
+    ├── sqlite.ts           # SQLite operations
+    ├── schema.sql          # Database schema
+    └── merkle.ts           # Merkle tree implementation
 ```
 
 ## Setup
@@ -40,22 +37,13 @@ src/
 
 - Node.js 18+
 - TypeScript 5+
-- ONNX model file: `models/model_quantized.onnx`
+- ONNX model: `models/model_quantized.onnx` (all-MiniLM-L6-v2)
 
 ### Installation
 
 ```bash
 npm install
 ```
-
-### Configuration
-
-Edit `src/config/paths.ts` to customize:
-
-- `pollIntervalMs`: Polling interval (default: 10000ms)
-- `projectFolders`: Folders to watch (default: BankIntegration, Hotelintegration)
-- `dbPath`: SQLite database location
-- `modelPath`: ONNX model location
 
 ## Usage
 
@@ -74,19 +62,46 @@ npm start
 
 The service will:
 1. Initialize the ONNX model and database
-2. Process all XML files on first run
-3. Watch for changes every 10 seconds
-4. Update only modified chunks incrementally
+2. Process all XML files on first run (chunks at semantic boundaries)
+3. Track cross-artifact references (sequences, local-entries, endpoints, templates)
+4. Watch for changes every 10 seconds
+5. Update only modified chunks (Merkle tree detects changes)
 
 ### Search Code
 
 ```bash
-npm run search:dev "hotel booking creation"
+# Find hotel booking creation logic
+npm run search "create hotel booking"
+
+# Find error handling patterns
+npm run search "error handling"
+
+# Find currency conversion
+npm run search "currency conversion"
 ```
 
-Or after building:
-```bash
-npm run search "error handling in API"
+Results show:
+- **Similarity Score** (0-1, higher = more relevant)
+- **File Path** and **Line Numbers**
+- **Semantic Type** (resource, mediator, sequence, filter, payloadFactory)
+- **Semantic Intent** (processing, validation, transformation, delegation, error-handling)
+- **Context** (API name, resource path, sequence name)
+- **References** (related sequences, local-entries, endpoints, templates)
+- **XML Preview**
+
+Example output:
+```
+🔍 Searching for: "create hotel booking"
+
+1. [Score: 0.5183]
+   📄 File: .../CreateBookingSequence.xml
+   📍 Lines: 3-5
+   🏷️  Type: mediator | Intent: processing
+   🔗 Context: {"api":"HTTP_SC"}
+   📋 XML Preview:
+   <log category="INFO">
+       <message>Creating booking for ${vars.guestName}</message>
+   </log>
 ```
 
 ## Database Schema
@@ -97,42 +112,58 @@ npm run search "error handling in API"
 |--------|------|-------------|
 | id | INTEGER | Primary key |
 | file_path | TEXT | Full file path |
-| file_hash | TEXT | SHA-256 hash of file content |
-| resource_name | TEXT | Name of the resource (API, sequence, etc.) |
-| resource_type | TEXT | Type of resource (api, sequence, proxy, etc.) |
-| chunk_type | TEXT | Type of chunk (resource, inSequence, log, etc.) |
-| chunk_index | INTEGER | Sequential chunk number |
+| resource_name | TEXT | Name of the resource |
+| chunk_type | TEXT | Type of chunk |
 | start_line | INTEGER | Starting line number |
 | end_line | INTEGER | Ending line number |
 | parent_chunk_id | INTEGER | Foreign key to parent chunk |
-| embedding | BLOB | Float32Array embedding vector (384 dimensions) |
-| timestamp | INTEGER | Last update timestamp |
+| embedding | BLOB | Float32Array (384 dimensions) |
+| **content_hash** | TEXT | SHA-256 for change detection |
+| **semantic_type** | TEXT | filter \| payloadFactory \| sequence \| resource |
+| **semantic_intent** | TEXT | validation \| transformation \| delegation \| response |
+| **context_json** | TEXT | {api, method, uri, resource, sequence} |
+| **sequence_key** | TEXT | Artifact name if definition |
+| **is_sequence_definition** | INTEGER | 1 if standalone artifact |
+| **referenced_sequences** | TEXT | JSON array of referenced artifacts |
 
-### Example Chunk Table (First 10 chunks)
-id  resource_name   resource_type  chunk_type      start_line  end_line  parent_chunk_id
---  --------------  -------------  --------------  ----------  --------  ---------------
-1   api             api            api             2           150                      
-2   resource        resource       resource        3           12        1              
-3   inSequence      api            inSequence      4           9         2              
-4   payloadFactory  api            payloadFactory  5           7         3              
-5   respond         api            respond         1           1         3              
-6   faultSequence   api            faultSequence   10          11        2              
-7   resource        resource       resource        14          60        1              
-8   amountInUSD     api            inSequence      15          47        7              
-9   variable        api            variable        16          16        8              
-10  variable        api            variable        17          17        8              
+### sequence_references table
+
+Tracks caller → callee relationships:
+- `caller_chunk_id`: Chunk that references artifact
+- `callee_chunk_id`: Referenced artifact definition
+- `sequence_key`: Name of referenced artifact
 
 ## Chunking Strategy
 
-The service creates a hierarchical chunk graph:
+Semantic boundaries:
+- **resource**: API resources (`/bookings`, `/balance/{id}`)
+- **inSequence**: Request processing flow
+- **filter**: Conditional logic (switch/case)
+- **sequence**: Reusable sequence definitions
+- **payloadFactory**: Response transformations
+- **respond**: Terminal response actions
 
-1. **Resource Level**: APIs, proxies, sequences, endpoints
-2. **Sequence Level**: inSequence, outSequence, faultSequence
-3. **Mediator Level**: log, payloadFactory, filter, respond, etc.
+Each chunk maintains parent references for hierarchical navigation.
 
-Each chunk maintains a reference to its parent, enabling:
-- Context-aware retrieval
-- Hierarchical navigation
+## Configuration
+
+Edit inline constants in `src/embedding-service/index.ts`:
+- `pollIntervalMs`: 10000 (10 seconds)
+- `projectFolders`: ['BankIntegration', 'Hotelintegration']
+- `artifactsSubPath`: 'src/main/wso2mi/artifacts'
+
+## Development
+
+```bash
+# Build TypeScript
+npm run build
+
+# Run tests (after implementing)
+npm test
+
+# Development mode with auto-reload
+npm run dev
+```
 - Graph traversal queries
 
 ## License

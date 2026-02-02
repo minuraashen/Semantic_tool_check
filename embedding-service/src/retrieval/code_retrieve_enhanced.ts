@@ -1,6 +1,12 @@
-import { config } from '../config/paths';
+import * as path from 'path';
 import { SQLiteDB, ChunkRecord } from '../db/sqlite';
 import { Embedder } from '../embedding-service/embedder';
+
+const rootDir = path.resolve(__dirname, '../../');
+const config = {
+  dbPath: path.resolve(rootDir, 'data/embeddings.db'),
+  modelPath: path.resolve(rootDir, 'models/model_quantized.onnx'),
+};
 
 export interface RetrievalResult {
   id: number;

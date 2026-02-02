@@ -7,10 +7,7 @@
     "build": "tsc",
     "start": "npm run build && node dist/embedding-service/index.js",
     "dev": "ts-node src/embedding-service/index.ts",
-    "search": "ts-node src/retrieval/search.ts",
-    "search:old": "ts-node src/retrieval/code_retrieve.ts",
-    "visualize": "npm run build && node dist/utils/visualize.js",
-    "visualize:dev": "ts-node src/utils/visualize.ts"
+    "search": "ts-node src/retrieval/search.ts"
   },
   "keywords": [
     "embedding",
