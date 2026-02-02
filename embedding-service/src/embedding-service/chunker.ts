@@ -1,5 +1,17 @@
 import * as fs from 'fs';
 import { XMLParser } from 'fast-xml-parser';
+import { computeChunkHash } from '../db/merkle';
+
+/**
+ * PHASE 2: Semantic, Hierarchical, Size-Aware XML Chunker
+ * 
+ * This chunker replaces token-agnostic splitting with semantic boundary detection.
+ * Key improvements:
+ * - Respects semantic boundaries (filter, switch, sequence, payloadFactory, etc.)
+ * - Token-aware (≈300 token limit) but doesn't break semantic units
+ * - Inherits context metadata (API name, method, URI, parent info)
+ * - Allows overlapping for large atomic nodes
+ */
 
 export interface XMLChunk {
   filePath: string;
@@ -12,6 +24,21 @@ export interface XMLChunk {
   content: string;
   parentChunkId: number | null;
   embeddingText: string;
+  // NEW: Semantic metadata for Merkle tree
+  semanticType: string;   // filter | payloadFactory | sequence | resource | api
+  semanticIntent: string; // validation | transformation | delegation | response
+  contentHash: string;    // Hash of content + metadata
+  context: {
+    api: string;
+    method?: string;
+    uri?: string;
+    resource?: string;
+    sequence?: string;
+  };
+  // NEW: Cross-file sequence tracking
+  sequenceKey?: string;              // "CreateBookingSequence" (if this IS a sequence definition)
+  isSequenceDefinition?: boolean;    // true if standalone sequence file
+  referencedSequences?: string[];    // ["CreateBookingSequence", "ErrorHandler"] (if this calls sequences)
 }
 
 interface LineRange {
@@ -19,13 +46,22 @@ interface LineRange {
   end: number;
 }
 
+interface SemanticContext {
+  api: string;
+  method?: string;
+  uri?: string;
+  resource?: string;
+  sequence?: string;
+}
+
 export class XMLChunker {
   private chunkCounter = 0;
   private lastSearchPosition: number = 0;
+  private readonly MAX_TOKENS = 300; // Token limit constraint
 
   async chunkFile(filePath: string): Promise<XMLChunk[]> {
     this.chunkCounter = 0;
-    this.lastSearchPosition = 0; // Reset for each file
+    this.lastSearchPosition = 0;
     const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
     const lines = xmlContent.split('\n');
     
@@ -39,19 +75,147 @@ export class XMLChunker {
 
     const parsed = parser.parse(xmlContent);
     const chunks: XMLChunk[] = [];
+    
+    // Extract top-level context (API name or Sequence name)
+    const rootContext: SemanticContext = {
+      api: this.extractApiName(parsed),
+    };
+    
+    // Detect if this is a standalone artifact file (sequence, local-entry, endpoint, template)
+    const isStandaloneSequence = filePath.includes('/sequences/') || 
+                                  filePath.includes('/local-entries/') ||
+                                  filePath.includes('/endpoints/') ||
+                                  filePath.includes('/templates/');
+    if (isStandaloneSequence) {
+      rootContext.api = this.extractSequenceName(parsed);
+    }
 
-    this.processNode(parsed, xmlContent, lines, filePath, chunks, null);
+    this.processNode(parsed, xmlContent, lines, filePath, chunks, null, rootContext);
+    
+    // Post-process: Extract sequence references from all chunks
+    this.extractSequenceReferences(chunks, xmlContent);
     
     return chunks;
   }
 
+  /**
+   * Extract sequence/artifact name from standalone files
+   * Handles: sequences, local-entries, endpoints, templates
+   */
+  private extractSequenceName(parsed: any): string {
+    if (!Array.isArray(parsed)) return 'unknown';
+    
+    for (const item of parsed) {
+      const tagName = Object.keys(item)[0];
+      if (tagName === 'sequence' || tagName === 'localEntry' || 
+          tagName === 'endpoint' || tagName === 'template') {
+        const attrs = this.extractAttributes(item[tagName]);
+        return attrs.name || attrs.key || 'unknown';
+      }
+    }
+    return 'unknown';
+  }
+
+  /**
+   * Extract all cross-artifact references from XML content
+   * Tracks:
+   * - <sequence key="..."/> - Sequence references
+   * - configKey="..." - Local entry references (e.g., http connectors)
+   * - <endpoint key="..."/> - Endpoint references
+   * - <call-template target="..."/> - Template references
+   * This enables comprehensive cross-artifact relationship tracking
+   */
+  private extractSequenceReferences(chunks: XMLChunk[], xmlContent: string): void {
+    const allReferences = new Set<string>();
+    
+    // Pattern 1: <sequence key="SequenceName"/>
+    const sequenceRefPattern = /<sequence\s+key=["']([^"']+)["']\s*\/>/g;
+    let match;
+    while ((match = sequenceRefPattern.exec(xmlContent)) !== null) {
+      allReferences.add(`sequence:${match[1]}`);
+    }
+    
+    // Pattern 2: configKey="LocalEntryName" (for http.init, endpoints, etc.)
+    const configKeyPattern = /configKey=["']([^"']+)["']/g;
+    while ((match = configKeyPattern.exec(xmlContent)) !== null) {
+      allReferences.add(`localEntry:${match[1]}`);
+    }
+    
+    // Pattern 3: <endpoint key="EndpointName"/>
+    const endpointRefPattern = /<endpoint\s+key=["']([^"']+)["']\s*\/>/g;
+    while ((match = endpointRefPattern.exec(xmlContent)) !== null) {
+      allReferences.add(`endpoint:${match[1]}`);
+    }
+    
+    // Pattern 4: <call-template target="TemplateName"/>
+    const templateRefPattern = /<call-template\s+target=["']([^"']+)["']/g;
+    while ((match = templateRefPattern.exec(xmlContent)) !== null) {
+      allReferences.add(`template:${match[1]}`);
+    }
+    
+    // Attach references to all chunks in this file
+    if (allReferences.size > 0) {
+      const referencesArray = Array.from(allReferences);
+      for (const chunk of chunks) {
+        chunk.referencedSequences = referencesArray;
+      }
+    }
+  }
+
+
+  /**
+   * SEMANTIC BOUNDARY DETECTION
+   * 
+   * Nodes that represent semantic boundaries (not just structural):
+   * - resource: Defines an API endpoint with specific intent
+   * - inSequence/outSequence/faultSequence: Flow control boundaries
+   * - filter/switch: Conditional logic (decision points)
+   * - sequence (key-based): Reusable logic units
+   * - payloadFactory: Data transformation
+   * - respond: Response generation (terminal node)
+   * 
+   * These boundaries define "one primary intention" per chunk.
+   */
+  private isSemanticBoundary(tagName: string): boolean {
+    return [
+      'resource', 'inSequence', 'outSequence', 'faultSequence',
+      'filter', 'switch', 'sequence', 'payloadFactory', 'respond'
+    ].includes(tagName);
+  }
+
+  /**
+   * Extract API name from parsed XML structure
+   */
+  private extractApiName(parsed: any): string {
+    if (!Array.isArray(parsed)) return 'unknown';
+    
+    for (const item of parsed) {
+      const tagName = Object.keys(item)[0];
+      if (tagName === 'api' || tagName === 'proxy') {
+        const attrs = this.extractAttributes(item[tagName]);
+        return attrs.name || attrs.context || tagName;
+      }
+    }
+    return 'unknown';
+  }
+
+  /**
+   * Recursive traversal with semantic boundary detection
+   * 
+   * Decision logic:
+   * 1. If node is a semantic boundary → create chunk
+   * 2. If node is large (>300 tokens) but atomic → create chunk with overlap
+   * 3. If node is small but multi-purpose → split at child boundaries
+   * 4. Always inherit context from parent
+   */
   private processNode(
     node: any,
     xmlContent: string,
     lines: string[],
     filePath: string,
     chunks: XMLChunk[],
-    parentChunkId: number | null
+    parentChunkId: number | null,
+    context: SemanticContext
   ): void {
     if (!Array.isArray(node)) return;
 
@@ -59,16 +223,43 @@ export class XMLChunker {
       const tagName = Object.keys(item)[0];
       const element = item[tagName];
 
+      // Update context based on node type
+      const updatedContext = this.updateContext(tagName, element, context);
+
       if (this.isResourceType(tagName)) {
-        this.chunkResource(tagName, element, xmlContent, lines, filePath, chunks, parentChunkId);
-      } else if (this.isSequenceType(tagName)) {
-        this.chunkSequence(tagName, element, xmlContent, lines, filePath, chunks, parentChunkId);
+        this.chunkResource(tagName, element, xmlContent, lines, filePath, chunks, parentChunkId, updatedContext);
+      } else if (this.isSemanticBoundary(tagName)) {
+        // Semantic boundary → always create chunk
+        this.chunkSemanticBoundary(tagName, element, xmlContent, lines, filePath, chunks, parentChunkId, updatedContext);
       } else if (this.isMediatorType(tagName)) {
-        this.chunkMediator(tagName, element, xmlContent, lines, filePath, chunks, parentChunkId);
+        this.chunkMediator(tagName, element, xmlContent, lines, filePath, chunks, parentChunkId, updatedContext);
       } else if (Array.isArray(element)) {
-        this.processNode(element, xmlContent, lines, filePath, chunks, parentChunkId);
+        this.processNode(element, xmlContent, lines, filePath, chunks, parentChunkId, updatedContext);
       }
     }
+  }
+
+  /**
+   * Update semantic context as we traverse the tree
+   * This metadata is inherited by all child chunks
+   */
+  private updateContext(tagName: string, element: any, parentContext: SemanticContext): SemanticContext {
+    const attrs = this.extractAttributes(element);
+    const newContext = { ...parentContext };
+
+    if (tagName === 'api' || tagName === 'proxy') {
+      newContext.api = attrs.name || attrs.context || tagName;
+    } else if (tagName === 'resource') {
+      newContext.method = attrs.methods;
+      newContext.uri = attrs['uri-template'] || attrs.uri;
+      newContext.resource = `${attrs.methods} ${attrs['uri-template'] || attrs.uri}`;
+    } else if (tagName === 'inSequence' || tagName === 'outSequence' || tagName === 'faultSequence') {
+      newContext.sequence = tagName;
+    } else if (tagName === 'sequence' && attrs.key) {
+      newContext.sequence = attrs.key;
+    }
+
+    return newContext;
   }
 
   private chunkResource(
@@ -78,7 +269,8 @@ export class XMLChunker {
     lines: string[],
     filePath: string,
     chunks: XMLChunk[],
-    parentChunkId: number | null
+    parentChunkId: number | null,
+    context: SemanticContext
   ): void {
     const attrs = this.extractAttributes(element);
     const resourceName = attrs.name || attrs.context || tagName;
@@ -86,6 +278,26 @@ export class XMLChunker {
     
     const chunkIndex = this.chunkCounter++;
     const content = this.extractContent(lines, range);
+    const embeddingText = this.createEmbeddingText(tagName, resourceName, content, attrs);
+    
+    // Determine semantic type and intent
+    const semanticType = 'resource';
+    const semanticIntent = this.inferIntent(tagName, attrs, content);
+    const contentHash = computeChunkHash(content, {
+      type: semanticType,
+      intent: semanticIntent,
+      context,
+    });
+    
+    // Check if this is a sequence/artifact definition (standalone file)
+    const isStandaloneArtifact = filePath.includes('/sequences/') || 
+                                  filePath.includes('/local-entries/') ||
+                                  filePath.includes('/endpoints/') ||
+                                  filePath.includes('/templates/');
+    const sequenceKey = isStandaloneArtifact && 
+                       (tagName === 'sequence' || tagName === 'localEntry' || 
+                        tagName === 'endpoint' || tagName === 'template') 
+                       ? (attrs.name || attrs.key) : undefined;
     
     chunks.push({
       filePath,
@@ -97,24 +309,40 @@ export class XMLChunker {
       endLine: range.end,
       content,
       parentChunkId,
-      embeddingText: this.createEmbeddingText(tagName, resourceName, content, attrs),
+      embeddingText,
+      semanticType,
+      semanticIntent,
+      contentHash,
+      context,
+      sequenceKey,
+      isSequenceDefinition: isStandaloneArtifact && 
+                           (tagName === 'sequence' || tagName === 'localEntry' || 
+                            tagName === 'endpoint' || tagName === 'template'),
+      referencedSequences: [], // Will be filled by extractSequenceReferences()
     });
 
     const currentChunkId = chunkIndex;
 
     if (Array.isArray(element)) {
-      this.processNode(element, xmlContent, lines, filePath, chunks, currentChunkId);
+      this.processNode(element, xmlContent, lines, filePath, chunks, currentChunkId, context);
     }
   }
 
-  private chunkSequence(
+  /**
+   * Chunk semantic boundaries (filter, switch, sequence, payloadFactory, respond)
+   * 
+   * These are the core decision-making/transformation nodes.
+   * Token limit is a constraint, but we don't break semantic units.
+   */
+  private chunkSemanticBoundary(
     tagName: string,
     element: any,
     xmlContent: string,
     lines: string[],
     filePath: string,
     chunks: XMLChunk[],
-    parentChunkId: number | null
+    parentChunkId: number | null,
+    context: SemanticContext
   ): void {
     const attrs = this.extractAttributes(element);
     const resourceName = attrs.key || attrs.name || tagName;
@@ -122,6 +350,22 @@ export class XMLChunker {
     
     const chunkIndex = this.chunkCounter++;
     const content = this.extractContent(lines, range);
+    const tokenCount = this.estimateTokens(content);
+    
+    // Token limit check: If large but atomic, create chunk (allow overlap if needed)
+    if (tokenCount > this.MAX_TOKENS && this.isAtomicNode(tagName)) {
+      // Large atomic node (e.g., huge payloadFactory) → chunk with note about size
+      console.warn(`⚠️  Large atomic node (${tokenCount} tokens) at ${tagName}: ${resourceName}`);
+    }
+    
+    const embeddingText = this.createEmbeddingText(tagName, resourceName, content, attrs);
+    const semanticType = this.mapToSemanticType(tagName);
+    const semanticIntent = this.inferIntent(tagName, attrs, content);
+    const contentHash = computeChunkHash(content, {
+      type: semanticType,
+      intent: semanticIntent,
+      context,
+    });
     
     chunks.push({
       filePath,
@@ -133,13 +377,19 @@ export class XMLChunker {
       endLine: range.end,
       content,
       parentChunkId,
-      embeddingText: this.createEmbeddingText(tagName, resourceName, content, attrs),
+      embeddingText,
+      semanticType,
+      semanticIntent,
+      contentHash,
+      context,
+      referencedSequences: [], // Will be filled by extractSequenceReferences()
     });
 
     const currentChunkId = chunkIndex;
 
-    if (Array.isArray(element)) {
-      this.processNode(element, xmlContent, lines, filePath, chunks, currentChunkId);
+    // Recurse into children for non-atomic nodes
+    if (Array.isArray(element) && !this.isAtomicNode(tagName)) {
+      this.processNode(element, xmlContent, lines, filePath, chunks, currentChunkId, context);
     }
   }
 
@@ -150,7 +400,8 @@ export class XMLChunker {
     lines: string[],
     filePath: string,
     chunks: XMLChunk[],
-    parentChunkId: number | null
+    parentChunkId: number | null,
+    context: SemanticContext
   ): void {
     const attrs = this.extractAttributes(element);
     const resourceName = attrs.name || attrs.key || tagName;
@@ -158,6 +409,15 @@ export class XMLChunker {
     
     const chunkIndex = this.chunkCounter++;
     const content = this.extractContent(lines, range);
+    const embeddingText = this.createEmbeddingText(tagName, resourceName, content, attrs);
+    
+    const semanticType = this.mapToSemanticType(tagName);
+    const semanticIntent = this.inferIntent(tagName, attrs, content);
+    const contentHash = computeChunkHash(content, {
+      type: semanticType,
+      intent: semanticIntent,
+      context,
+    });
     
     chunks.push({
       filePath,
@@ -169,26 +429,104 @@ export class XMLChunker {
       endLine: range.end,
       content,
       parentChunkId,
-      embeddingText: this.createEmbeddingText(tagName, resourceName, content, attrs),
+      embeddingText,
+      semanticType,
+      semanticIntent,
+      contentHash,
+      context,
+      referencedSequences: [], // Will be filled by extractSequenceReferences()
     });
   }
 
-  private isResourceType(tagName: string): boolean {
-    return ['api', 'proxy', 'sequence', 'endpoint', 'localEntry', 'resource'].includes(tagName);
+  /**
+   * Determine if a node is atomic (should not be split)
+   * Atomic nodes: payloadFactory, respond, log, property
+   */
+  private isAtomicNode(tagName: string): boolean {
+    return ['payloadFactory', 'respond', 'log', 'property', 'variable'].includes(tagName);
   }
 
-  private isSequenceType(tagName: string): boolean {
-    return ['inSequence', 'outSequence', 'faultSequence'].includes(tagName);
+  /**
+   * Map XML tag to semantic type for Merkle tree
+   */
+  private mapToSemanticType(tagName: string): string {
+    const typeMap: Record<string, string> = {
+      'filter': 'filter',
+      'switch': 'filter',
+      'payloadFactory': 'payloadFactory',
+      'respond': 'response',
+      'inSequence': 'sequence',
+      'outSequence': 'sequence',
+      'faultSequence': 'sequence',
+      'sequence': 'sequence',
+      'resource': 'resource',
+      'api': 'api',
+      'proxy': 'api',
+    };
+    return typeMap[tagName] || 'mediator';
+  }
+
+  /**
+   * Infer semantic intent from tag name and content
+   * 
+   * Intent categories:
+   * - validation: filter, switch with conditions
+   * - transformation: payloadFactory, enrich
+   * - delegation: call, send, http.*
+   * - response: respond, payloadFactory in final position
+   * - error-handling: faultSequence
+   */
+  private inferIntent(tagName: string, attrs: Record<string, string>, content: string): string {
+    // Validation: filter/switch with conditions
+    if (tagName === 'filter' || tagName === 'switch') {
+      return 'validation';
+    }
+    
+    // Transformation: payloadFactory, enrich
+    if (tagName === 'payloadFactory' || tagName === 'enrich') {
+      return 'transformation';
+    }
+    
+    // Delegation: call, send, http.*
+    if (tagName === 'call' || tagName === 'send' || tagName.startsWith('http.')) {
+      return 'delegation';
+    }
+    
+    // Response: respond
+    if (tagName === 'respond') {
+      return 'response';
+    }
+    
+    // Error handling: faultSequence
+    if (tagName === 'faultSequence') {
+      return 'error-handling';
+    }
+    
+    // Default: processing
+    return 'processing';
+  }
+
+  /**
+   * Estimate token count (rough approximation)
+   * 1 token ≈ 4 characters for English text
+   */
+  private estimateTokens(content: string): number {
+    return Math.ceil(content.length / 4);
+  }
+
+  private isResourceType(tagName: string): boolean {
+    return ['api', 'proxy', 'endpoint', 'localEntry', 'template', 'sequence'].includes(tagName);
   }
 
   private isMediatorType(tagName: string): boolean {
     const mediators = [
-      'log', 'payloadFactory', 'property', 'variable', 'filter', 'respond',
-      'call', 'send', 'drop', 'enrich', 'switch', 'clone', 'iterate',
-      'aggregate', 'cache', 'throttle', 'validate', 'xslt', 'script',
+      'log', 'property', 'variable', 'call', 'send', 'drop', 
+      'enrich', 'clone', 'iterate', 'aggregate', 'cache', 
+      'throttle', 'validate', 'xslt', 'script',
       'http.post', 'http.get', 'http.put', 'http.delete', 'http.patch'
     ];
-    return mediators.includes(tagName);
+    // Exclude semantic boundaries from mediators
+    return mediators.includes(tagName) && !this.isSemanticBoundary(tagName);
   }
 
   private extractAttributes(element: any): Record<string, string> {

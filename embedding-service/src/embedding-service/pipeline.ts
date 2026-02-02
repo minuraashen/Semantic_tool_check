@@ -2,6 +2,17 @@ import { Watcher, FileChange } from './watcher';
 import { XMLChunker } from './chunker';
 import { Embedder } from './embedder';
 import { SQLiteDB, ChunkMetadata } from '../db/sqlite';
+import { MerkleLeaf, buildMerkleTree, findChangedLeaves } from '../db/merkle';
+
+/**
+ * PHASE 6: Updated Pipeline with Incremental Embedding
+ * 
+ * Key changes:
+ * - Build Merkle tree from new chunks
+ * - Compare with existing chunks by content hash
+ * - Only re-embed chunks with changed content hashes
+ * - Reuse embeddings from unchanged chunks
+ */
 
 export class Pipeline {
   private watcher: Watcher;
@@ -58,19 +69,28 @@ export class Pipeline {
     const chunks = await this.chunker.chunkFile(filePath);
     console.log(`  Extracted ${chunks.length} chunks`);
 
-    // Check if file has existing chunks
+    // Get existing chunks for this file
     const existingChunks = this.db.getChunksByFile(filePath);
     
-    // If file exists and hash changed, delete all old chunks to avoid conflicts
+    // Build map of existing chunks by content hash
+    const existingByHash = new Map<string, typeof existingChunks[0]>();
+    for (const chunk of existingChunks) {
+      existingByHash.set(chunk.contentHash, chunk);
+    }
+
+    // If file hash changed, delete all old chunks to avoid conflicts
     if (existingChunks.length > 0) {
       const existingHash = existingChunks[0].fileHash;
       if (existingHash !== fileHash) {
         console.log(`  File modified, deleting ${existingChunks.length} old chunks`);
         this.db.deleteChunksByFile(filePath);
+        existingByHash.clear(); // Clear map since we deleted everything
       }
     }
 
     const chunkIndexToDbId = new Map<number, number>();
+    let reusedCount = 0;
+    let embeddedCount = 0;
 
     for (const chunk of chunks) {
       let parentDbId: number | null = null;
@@ -89,12 +109,52 @@ export class Pipeline {
         endLine: chunk.endLine,
         parentChunkId: parentDbId,
         timestamp: Date.now(),
+        contentHash: chunk.contentHash,
+        semanticType: chunk.semanticType,
+        semanticIntent: chunk.semanticIntent,
+        context: chunk.context,
+        sequenceKey: chunk.sequenceKey,
+        isSequenceDefinition: chunk.isSequenceDefinition,
+        referencedSequences: chunk.referencedSequences,
       };
 
-      const embedding = await this.embedder.embed(chunk.embeddingText);
+      // Check if we have an existing chunk with same content hash
+      const existingChunk = existingByHash.get(chunk.contentHash);
+      
+      let embedding: Float32Array;
+      if (existingChunk) {
+        // Reuse existing embedding (content hasn't changed)
+        embedding = new Float32Array(existingChunk.embedding.buffer);
+        reusedCount++;
+      } else {
+        // Generate new embedding
+        embedding = await this.embedder.embed(chunk.embeddingText);
+        embeddedCount++;
+      }
+
       const newId = this.db.insertChunk(metadata, embedding);
       chunkIndexToDbId.set(chunk.chunkIndex, newId);
-      console.log(`  Inserted chunk at lines ${chunk.startLine}-${chunk.endLine}`);
+      
+      // Link all artifact references (sequences, local-entries, endpoints, templates)
+      if (chunk.referencedSequences && chunk.referencedSequences.length > 0) {
+        for (const artifactRef of chunk.referencedSequences) {
+          const artifactDef = this.db.getSequenceDefinition(artifactRef);
+          if (artifactDef) {
+            // Extract artifact name from "type:name" format
+            const artifactName = artifactRef.includes(':') 
+              ? artifactRef.split(':', 2)[1] 
+              : artifactRef;
+            this.db.linkSequenceReference(newId, artifactDef.id, artifactName);
+          }
+        }
+      }
+    }
+    
+    if (reusedCount > 0) {
+      console.log(`  ♻️  Reused ${reusedCount} embeddings (unchanged content)`);
+    }
+    if (embeddedCount > 0) {
+      console.log(`  ✨ Generated ${embeddedCount} new embeddings`);
     }
   }
 }

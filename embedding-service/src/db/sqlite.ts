@@ -13,6 +13,21 @@ export interface ChunkMetadata {
   endLine: number;
   parentChunkId: number | null;
   timestamp: number;
+  // NEW: Merkle tree and semantic metadata
+  contentHash: string;
+  semanticType: string;
+  semanticIntent: string;
+  context: {
+    api: string;
+    method?: string;
+    uri?: string;
+    resource?: string;
+    sequence?: string;
+  };
+  // NEW: Cross-file sequence tracking
+  sequenceKey?: string;
+  isSequenceDefinition?: boolean;
+  referencedSequences?: string[];
 }
 
 export interface ChunkRecord extends ChunkMetadata {
@@ -43,8 +58,10 @@ export class SQLiteDB {
     const stmt = this.db.prepare(`
       INSERT INTO chunks (
         file_path, file_hash, resource_name, resource_type, chunk_type,
-        chunk_index, start_line, end_line, parent_chunk_id, embedding, timestamp
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        chunk_index, start_line, end_line, parent_chunk_id, embedding, timestamp,
+        content_hash, semantic_type, semantic_intent, context_json,
+        sequence_key, is_sequence_definition, referenced_sequences
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -58,7 +75,14 @@ export class SQLiteDB {
       metadata.endLine,
       metadata.parentChunkId,
       Buffer.from(embedding.buffer),
-      metadata.timestamp
+      metadata.timestamp,
+      metadata.contentHash,
+      metadata.semanticType,
+      metadata.semanticIntent,
+      JSON.stringify(metadata.context),
+      metadata.sequenceKey || null,
+      metadata.isSequenceDefinition ? 1 : 0,
+      metadata.referencedSequences ? JSON.stringify(metadata.referencedSequences) : null
     );
 
     return result.lastInsertRowid as number;
@@ -69,7 +93,9 @@ export class SQLiteDB {
       UPDATE chunks SET
         file_hash = ?, resource_name = ?, resource_type = ?, chunk_type = ?,
         chunk_index = ?, start_line = ?, end_line = ?, parent_chunk_id = ?,
-        embedding = ?, timestamp = ?
+        embedding = ?, timestamp = ?,
+        content_hash = ?, semantic_type = ?, semantic_intent = ?, context_json = ?,
+        sequence_key = ?, is_sequence_definition = ?, referenced_sequences = ?
       WHERE id = ?
     `);
 
@@ -84,6 +110,13 @@ export class SQLiteDB {
       metadata.parentChunkId,
       Buffer.from(embedding.buffer),
       metadata.timestamp,
+      metadata.contentHash,
+      metadata.semanticType,
+      metadata.semanticIntent,
+      JSON.stringify(metadata.context),
+      metadata.sequenceKey || null,
+      metadata.isSequenceDefinition ? 1 : 0,
+      metadata.referencedSequences ? JSON.stringify(metadata.referencedSequences) : null,
       id
     );
   }
@@ -102,6 +135,82 @@ export class SQLiteDB {
     `);
     const row = stmt.get(filePath, startLine, endLine) as any;
     return row ? this.mapRowToRecord(row) : null;
+  }
+
+  /**
+   * Get chunk by content hash (for Merkle tree comparison)
+   * Used to check if a chunk with the same content already exists
+   */
+  getChunkByContentHash(contentHash: string): ChunkRecord | null {
+    const stmt = this.db.prepare(`
+      SELECT * FROM chunks WHERE content_hash = ? LIMIT 1
+    `);
+    const row = stmt.get(contentHash) as any;
+    return row ? this.mapRowToRecord(row) : null;
+  }
+
+  /**
+   * Find artifact definition by key (sequence, local-entry, endpoint, template)
+   * Handles references like:
+   * - sequence:CreateBookingSequence
+   * - localEntry:CurrencyConverter
+   * - endpoint:BankEndpoint
+   * - template:LogTemplate
+   */
+  getSequenceDefinition(artifactRef: string): ChunkRecord | null {
+    // Parse reference format: "type:name" or just "name" (assume sequence)
+    let artifactType = 'sequence';
+    let artifactName = artifactRef;
+    
+    if (artifactRef.includes(':')) {
+      [artifactType, artifactName] = artifactRef.split(':', 2);
+    }
+    
+    const stmt = this.db.prepare(`
+      SELECT * FROM chunks 
+      WHERE sequence_key = ? AND is_sequence_definition = 1 
+      LIMIT 1
+    `);
+    const row = stmt.get(artifactName) as any;
+    return row ? this.mapRowToRecord(row) : null;
+  }
+
+  /**
+   * Find all chunks that reference a specific artifact
+   * Handles all artifact types (sequences, local-entries, endpoints, templates)
+   */
+  getChunksReferencingSequence(artifactRef: string): ChunkRecord[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM chunks 
+      WHERE referenced_sequences LIKE ?
+    `);
+    const pattern = `%"${artifactRef}"%`;
+    const rows = stmt.all(pattern) as any[];
+    return rows.map(this.mapRowToRecord);
+  }
+
+  /**
+   * Link caller chunk to callee sequence definition
+   */
+  linkSequenceReference(callerChunkId: number, calleeChunkId: number, sequenceKey: string): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO sequence_references (caller_chunk_id, callee_chunk_id, sequence_key, timestamp)
+      VALUES (?, ?, ?, ?)
+    `);
+    stmt.run(callerChunkId, calleeChunkId, sequenceKey, Date.now());
+  }
+
+  /**
+   * Get all sequence definitions called by a chunk
+   */
+  getReferencedSequences(chunkId: number): ChunkRecord[] {
+    const stmt = this.db.prepare(`
+      SELECT c.* FROM chunks c
+      INNER JOIN sequence_references sr ON c.id = sr.callee_chunk_id
+      WHERE sr.caller_chunk_id = ?
+    `);
+    const rows = stmt.all(chunkId) as any[];
+    return rows.map(this.mapRowToRecord);
   }
 
   deleteChunksByFile(filePath: string): void {
@@ -140,6 +249,13 @@ export class SQLiteDB {
       parentChunkId: row.parent_chunk_id,
       timestamp: row.timestamp,
       embedding: row.embedding,
+      contentHash: row.content_hash,
+      semanticType: row.semantic_type,
+      semanticIntent: row.semantic_intent,
+      context: JSON.parse(row.context_json),
+      sequenceKey: row.sequence_key,
+      isSequenceDefinition: row.is_sequence_definition === 1,
+      referencedSequences: row.referenced_sequences ? JSON.parse(row.referenced_sequences) : undefined,
     };
   }
 
