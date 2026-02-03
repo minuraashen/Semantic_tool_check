@@ -1,8 +1,9 @@
-import { pipeline, env } from '@xenova/transformers';
+import { pipeline, env, AutoTokenizer } from '@xenova/transformers';
 import * as path from 'path';
 
 export class Embedder {
   private extractor: any = null;
+  private tokenizer: any = null;
 
   async initialize(modelPath: string): Promise<void> {
     // Extract the directory containing the model files
@@ -20,6 +21,9 @@ export class Embedder {
         quantized: true // Use model_quantized.onnx
       }
     );
+    
+    // Initialize tokenizer for accurate token counting
+    this.tokenizer = await AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2');
   }
 
   async embed(text: string): Promise<Float32Array> {
@@ -37,7 +41,21 @@ export class Embedder {
     return new Float32Array(Array.from(result.data));
   }
 
+  /**
+   * Count tokens using the actual model's tokenizer
+   * @param text Text to tokenize (XML content + metadata)
+   * @returns Accurate token count
+   */
+  countTokens(text: string): number {
+    if (!this.tokenizer) {
+      throw new Error('Tokenizer not initialized');
+    }
+    const tokens = this.tokenizer.encode(text);
+    return tokens.length;
+  }
+
   async close(): Promise<void> {
     this.extractor = null;
+    this.tokenizer = null;
   }
 }

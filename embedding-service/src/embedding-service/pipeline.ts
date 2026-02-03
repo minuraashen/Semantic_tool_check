@@ -22,7 +22,7 @@ export class Pipeline {
 
   constructor(db: SQLiteDB, embedder: Embedder) {
     this.watcher = new Watcher();
-    this.chunker = new XMLChunker();
+    this.chunker = new XMLChunker(embedder); // Pass embedder for token counting
     this.embedder = embedder;
     this.db = db;
   }
