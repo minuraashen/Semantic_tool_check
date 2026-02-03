@@ -17,10 +17,15 @@ export interface MerkleLeaf {
     type: string;         // filter | payloadFactory | sequence | resource | api
     intent: string;       // validation | transformation | delegation | response
     context: {
-      api: string;
-      method?: string;
-      uri?: string;
-      resource?: string;
+      api: {
+        name?: string;
+        context?: string;
+        xmlns?: string;
+      };
+      resource?: {
+        method?: string;
+        uriTemplate?: string;
+      };
       sequence?: string;
     };
   };
@@ -68,15 +73,16 @@ export function computeNodeHash(children: (MerkleNode | MerkleLeaf)[]): string {
  */
 export function buildMerkleTree(leaves: MerkleLeaf[]): MerkleNode {
   // Group by API
-  const apiGroups = groupBy(leaves, leaf => leaf.metadata.context.api);
+  const apiGroups = groupBy(leaves, leaf => leaf.metadata.context.api.name || 'unknown');
   
   const apiNodes: MerkleNode[] = [];
   
   for (const [apiName, apiLeaves] of Object.entries(apiGroups)) {
     // Group by resource within API
-    const resourceGroups = groupBy(apiLeaves, leaf => 
-      leaf.metadata.context.resource || 'root'
-    );
+    const resourceGroups = groupBy(apiLeaves, leaf => {
+      const resource = leaf.metadata.context.resource;
+      return resource ? `${resource.method} ${resource.uriTemplate}` : 'root';
+    });
     
     const resourceNodes: MerkleNode[] = [];
     

@@ -29,10 +29,15 @@ export interface XMLChunk {
   semanticIntent: string; // validation | transformation | delegation | response
   contentHash: string;    // Hash of content + metadata
   context: {
-    api: string;
-    method?: string;
-    uri?: string;
-    resource?: string;
+    api: {
+      name?: string;
+      context?: string;
+      xmlns?: string;
+    };
+    resource?: {
+      method?: string;
+      uriTemplate?: string;
+    };
     sequence?: string;
   };
   // NEW: Cross-file sequence tracking
@@ -47,10 +52,15 @@ interface LineRange {
 }
 
 interface SemanticContext {
-  api: string;
-  method?: string;
-  uri?: string;
-  resource?: string;
+  api: {
+    name?: string;
+    context?: string;
+    xmlns?: string;
+  };
+  resource?: {
+    method?: string;
+    uriTemplate?: string;
+  };
   sequence?: string;
 }
 
@@ -83,7 +93,9 @@ export class XMLChunker {
     
     // Extract top-level context (API name or Sequence name)
     const rootContext: SemanticContext = {
-      api: this.extractApiName(parsed),
+      api: {
+        name: this.extractApiName(parsed),
+      },
     };
     
     // Detect if this is a standalone artifact file (sequence, local-entry, endpoint, template)
@@ -92,7 +104,20 @@ export class XMLChunker {
                                   filePath.includes('/endpoints/') ||
                                   filePath.includes('/templates/');
     if (isStandaloneSequence) {
-      rootContext.api = this.extractSequenceName(parsed);
+      const artifactName = this.extractSequenceName(parsed);
+      rootContext.api = {
+        name: artifactName,
+      };
+      // Add artifact type to context
+      if (filePath.includes('/sequences/')) {
+        rootContext.sequence = `${artifactName} (definition)`;
+      } else if (filePath.includes('/local-entries/')) {
+        rootContext.sequence = `${artifactName} (local-entry definition)`;
+      } else if (filePath.includes('/endpoints/')) {
+        rootContext.sequence = `${artifactName} (endpoint definition)`;
+      } else if (filePath.includes('/templates/')) {
+        rootContext.sequence = `${artifactName} (template definition)`;
+      }
     }
 
     this.processNode(parsed, xmlContent, lines, filePath, chunks, null, rootContext);
@@ -225,14 +250,19 @@ export class XMLChunker {
     if (!Array.isArray(node)) return;
 
     for (const item of node) {
-      const tagName = Object.keys(item)[0];
+      const tagName = Object.keys(item).find(key => key !== ':@') || '';
+      if (!tagName) continue;
+      
       const element = item[tagName];
+      const nodeAttrs = item[':@'] || {};  // Attributes are at item level, not in element
 
-      // Update context based on node type
-      const updatedContext = this.updateContext(tagName, element, context);
+      // Update context based on node type (pass nodeAttrs, not element)
+      const updatedContext = this.updateContext(tagName, nodeAttrs, context);
 
-      // Only process semantic boundaries and resource types
-      if (this.isResourceType(tagName) || this.isSemanticBoundary(tagName)) {
+      // Check if this is a chunkable node (resource, semantic boundary, or mediator)
+      const isChunkable = this.isResourceType(tagName) || this.isSemanticBoundary(tagName) || this.isMediatorType(tagName);
+      
+      if (isChunkable) {
         // Token gating: Check if subtree fits within limit
         const range = this.findElementRange(tagName, this.getNodeName(tagName, element), lines);
         const content = this.extractContent(lines, range);
@@ -241,16 +271,16 @@ export class XMLChunker {
         
         if (tokenCount <= this.MAX_TOKENS) {
           // Subtree fits → Emit chunk and STOP traversal
-          this.createChunk(tagName, element, content, range, filePath, chunks, parentChunkId, updatedContext);
+          this.createChunk(tagName, nodeAttrs, content, range, filePath, chunks, parentChunkId, updatedContext);
           // HARD STOP: Do not descend into children
         } else {
-          // Subtree too large → Do NOT chunk, descend to children
+          // Subtree too large → Do NOT chunk, descend to ALL children
           if (Array.isArray(element)) {
             this.processNode(element, xmlContent, lines, filePath, chunks, parentChunkId, updatedContext);
           }
         }
       } else if (Array.isArray(element)) {
-        // Non-semantic nodes → just traverse
+        // Non-chunkable nodes → just traverse
         this.processNode(element, xmlContent, lines, filePath, chunks, parentChunkId, updatedContext);
       }
     }
@@ -260,20 +290,24 @@ export class XMLChunker {
    * Update semantic context as we traverse the tree
    * This metadata is inherited by all child chunks
    */
-  private updateContext(tagName: string, element: any, parentContext: SemanticContext): SemanticContext {
-    const attrs = this.extractAttributes(element);
+  private updateContext(tagName: string, attrs: Record<string, string>, parentContext: SemanticContext): SemanticContext {
     const newContext = { ...parentContext };
 
     if (tagName === 'api' || tagName === 'proxy') {
-      newContext.api = attrs.name || attrs.context || tagName;
+      newContext.api = {
+        name: attrs.name || attrs['@_name'],
+        context: attrs.context || attrs['@_context'],
+        xmlns: attrs.xmlns || attrs['@_xmlns'],
+      };
     } else if (tagName === 'resource') {
-      newContext.method = attrs.methods;
-      newContext.uri = attrs['uri-template'] || attrs.uri;
-      newContext.resource = `${attrs.methods} ${attrs['uri-template'] || attrs.uri}`;
+      newContext.resource = {
+        method: attrs.methods || attrs['@_methods'],
+        uriTemplate: attrs['uri-template'] || attrs['@_uri-template'] || attrs.uri || attrs['@_uri'],
+      };
     } else if (tagName === 'inSequence' || tagName === 'outSequence' || tagName === 'faultSequence') {
       newContext.sequence = tagName;
-    } else if (tagName === 'sequence' && attrs.key) {
-      newContext.sequence = attrs.key;
+    } else if (tagName === 'sequence' && (attrs.key || attrs['@_key'])) {
+      newContext.sequence = attrs.key || attrs['@_key'];
     }
 
     return newContext;
@@ -284,7 +318,7 @@ export class XMLChunker {
    */
   private createChunk(
     tagName: string,
-    element: any,
+    attrs: Record<string, string>,  // Now receives attrs directly
     content: string,
     range: LineRange,
     filePath: string,
@@ -292,7 +326,6 @@ export class XMLChunker {
     parentChunkId: number | null,
     context: SemanticContext
   ): void {
-    const attrs = this.extractAttributes(element);
     const resourceName = attrs.name || attrs.key || attrs.context || tagName;
     const chunkIndex = this.chunkCounter++;
     
@@ -515,10 +548,10 @@ export class XMLChunker {
    */
   private formatMetadata(context: SemanticContext): string {
     const parts: string[] = [];
-    if (context.api) parts.push(`API: ${context.api}`);
-    if (context.method) parts.push(`Method: ${context.method}`);
-    if (context.uri) parts.push(`URI: ${context.uri}`);
-    if (context.resource) parts.push(`Resource: ${context.resource}`);
+    if (context.api?.name) parts.push(`API: ${context.api.name}`);
+    if (context.api?.context) parts.push(`Context: ${context.api.context}`);
+    if (context.resource?.method) parts.push(`Method: ${context.resource.method}`);
+    if (context.resource?.uriTemplate) parts.push(`URI: ${context.resource.uriTemplate}`);
     if (context.sequence) parts.push(`Sequence: ${context.sequence}`);
     return parts.join(' ');
   }
@@ -526,12 +559,18 @@ export class XMLChunker {
   private extractAttributes(element: any): Record<string, string> {
     const attrs: Record<string, string> = {};
     
-    if (!Array.isArray(element)) return attrs;
-    
-    for (const item of element) {
-      if (item[':@']) {
-        Object.assign(attrs, item[':@']);
+    // Case 1: element is an array (preserveOrder format)
+    if (Array.isArray(element)) {
+      for (const item of element) {
+        if (item[':@']) {
+          Object.assign(attrs, item[':@']);
+          break; // Only get attributes from first :@ marker
+        }
       }
+    }
+    // Case 2: element is an object with :@ directly
+    else if (element && element[':@']) {
+      Object.assign(attrs, element[':@']);
     }
     
     return attrs;
