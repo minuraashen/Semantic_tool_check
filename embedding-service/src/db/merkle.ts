@@ -17,7 +17,7 @@ export interface MerkleLeaf {
     type: string;         // filter | payloadFactory | sequence | resource | api
     intent: string;       // validation | transformation | delegation | response
     context: {
-      api: {
+      api?: {
         name?: string;
         context?: string;
         xmlns?: string;
@@ -26,7 +26,23 @@ export interface MerkleLeaf {
         method?: string;
         uriTemplate?: string;
       };
-      sequence?: string;
+      sequence?: string | {
+        name?: string;
+        xmlns?: string;
+      };
+      localEntry?: {
+        key?: string;
+        xmlns?: string;
+      };
+      endpoint?: {
+        name?: string;
+        xmlns?: string;
+      };
+      template?: {
+        name?: string;
+        xmlns?: string;
+      };
+      references?: string[];
     };
   };
 }
@@ -72,8 +88,16 @@ export function computeNodeHash(children: (MerkleNode | MerkleLeaf)[]): string {
  * Groups chunks hierarchically: API → Resource → Sequence → Leaf
  */
 export function buildMerkleTree(leaves: MerkleLeaf[]): MerkleNode {
-  // Group by API
-  const apiGroups = groupBy(leaves, leaf => leaf.metadata.context.api.name || 'unknown');
+  // Group by API (or artifact type for standalone artifacts)
+  const apiGroups = groupBy(leaves, leaf => {
+    const ctx = leaf.metadata.context;
+    if (ctx.api?.name) return ctx.api.name;
+    if (ctx.localEntry?.key) return ctx.localEntry.key;
+    if (ctx.sequence && typeof ctx.sequence === 'object') return ctx.sequence.name || 'unknown';
+    if (ctx.endpoint?.name) return ctx.endpoint.name;
+    if (ctx.template?.name) return ctx.template.name;
+    return 'unknown';
+  });
   
   const apiNodes: MerkleNode[] = [];
   
@@ -88,9 +112,12 @@ export function buildMerkleTree(leaves: MerkleLeaf[]): MerkleNode {
     
     for (const [resourceName, resourceLeaves] of Object.entries(resourceGroups)) {
       // Group by sequence within resource
-      const sequenceGroups = groupBy(resourceLeaves, leaf =>
-        leaf.metadata.context.sequence || 'direct'
-      );
+      const sequenceGroups = groupBy(resourceLeaves, leaf => {
+        const seq = leaf.metadata.context.sequence;
+        if (typeof seq === 'string') return seq;
+        if (seq && typeof seq === 'object') return seq.name || 'direct';
+        return 'direct';
+      });
       
       const sequenceNodes: (MerkleNode | MerkleLeaf)[] = [];
       

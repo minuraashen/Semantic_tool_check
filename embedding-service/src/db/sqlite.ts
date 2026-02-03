@@ -18,7 +18,7 @@ export interface ChunkMetadata {
   semanticType: string;
   semanticIntent: string;
   context: {
-    api: {
+    api?: {
       name?: string;
       context?: string;
       xmlns?: string;
@@ -27,7 +27,23 @@ export interface ChunkMetadata {
       method?: string;
       uriTemplate?: string;
     };
-    sequence?: string;
+    sequence?: string | {
+      name?: string;
+      xmlns?: string;
+    };
+    localEntry?: {
+      key?: string;
+      xmlns?: string;
+    };
+    endpoint?: {
+      name?: string;
+      xmlns?: string;
+    };
+    template?: {
+      name?: string;
+      xmlns?: string;
+    };
+    references?: string[];
   };
   // NEW: Cross-file sequence tracking
   sequenceKey?: string;

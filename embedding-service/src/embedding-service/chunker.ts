@@ -29,7 +29,7 @@ export interface XMLChunk {
   semanticIntent: string; // validation | transformation | delegation | response
   contentHash: string;    // Hash of content + metadata
   context: {
-    api: {
+    api?: {
       name?: string;
       context?: string;
       xmlns?: string;
@@ -38,7 +38,23 @@ export interface XMLChunk {
       method?: string;
       uriTemplate?: string;
     };
-    sequence?: string;
+    sequence?: string | {
+      name?: string;
+      xmlns?: string;
+    };
+    localEntry?: {
+      key?: string;
+      xmlns?: string;
+    };
+    endpoint?: {
+      name?: string;
+      xmlns?: string;
+    };
+    template?: {
+      name?: string;
+      xmlns?: string;
+    };
+    references?: string[];
   };
   // NEW: Cross-file sequence tracking
   sequenceKey?: string;              // "CreateBookingSequence" (if this IS a sequence definition)
@@ -52,7 +68,7 @@ interface LineRange {
 }
 
 interface SemanticContext {
-  api: {
+  api?: {
     name?: string;
     context?: string;
     xmlns?: string;
@@ -61,7 +77,23 @@ interface SemanticContext {
     method?: string;
     uriTemplate?: string;
   };
-  sequence?: string;
+  sequence?: string | {
+    name?: string;
+    xmlns?: string;
+  };
+  localEntry?: {
+    key?: string;
+    xmlns?: string;
+  };
+  endpoint?: {
+    name?: string;
+    xmlns?: string;
+  };
+  template?: {
+    name?: string;
+    xmlns?: string;
+  };
+  references?: string[];  // What this chunk calls/uses
 }
 
 export class XMLChunker {
@@ -92,11 +124,7 @@ export class XMLChunker {
     const chunks: XMLChunk[] = [];
     
     // Extract top-level context (API name or Sequence name)
-    const rootContext: SemanticContext = {
-      api: {
-        name: this.extractApiName(parsed),
-      },
-    };
+    const rootContext: SemanticContext = {};
     
     // Detect if this is a standalone artifact file (sequence, local-entry, endpoint, template)
     const isStandaloneSequence = filePath.includes('/sequences/') || 
@@ -104,20 +132,35 @@ export class XMLChunker {
                                   filePath.includes('/endpoints/') ||
                                   filePath.includes('/templates/');
     if (isStandaloneSequence) {
-      const artifactName = this.extractSequenceName(parsed);
-      rootContext.api = {
-        name: artifactName,
-      };
-      // Add artifact type to context
-      if (filePath.includes('/sequences/')) {
-        rootContext.sequence = `${artifactName} (definition)`;
-      } else if (filePath.includes('/local-entries/')) {
-        rootContext.sequence = `${artifactName} (local-entry definition)`;
-      } else if (filePath.includes('/endpoints/')) {
-        rootContext.sequence = `${artifactName} (endpoint definition)`;
-      } else if (filePath.includes('/templates/')) {
-        rootContext.sequence = `${artifactName} (template definition)`;
+      const artifactMeta = this.extractArtifactMetadata(parsed);
+      
+      // Use artifact-specific context structure
+      if (artifactMeta.type === 'sequence') {
+        rootContext.sequence = {
+          name: artifactMeta.name,
+          xmlns: artifactMeta.xmlns
+        };
+      } else if (artifactMeta.type === 'localEntry') {
+        rootContext.localEntry = {
+          key: artifactMeta.name,
+          xmlns: artifactMeta.xmlns
+        };
+      } else if (artifactMeta.type === 'endpoint') {
+        rootContext.endpoint = {
+          name: artifactMeta.name,
+          xmlns: artifactMeta.xmlns
+        };
+      } else if (artifactMeta.type === 'template') {
+        rootContext.template = {
+          name: artifactMeta.name,
+          xmlns: artifactMeta.xmlns
+        };
       }
+    } else {
+      // For API files, extract API name
+      rootContext.api = {
+        name: this.extractApiName(parsed),
+      };
     }
 
     this.processNode(parsed, xmlContent, lines, filePath, chunks, null, rootContext);
@@ -129,21 +172,59 @@ export class XMLChunker {
   }
 
   /**
-   * Extract sequence/artifact name from standalone files
+   * Extract sequence/artifact metadata from standalone files
    * Handles: sequences, local-entries, endpoints, templates
    */
-  private extractSequenceName(parsed: any): string {
-    if (!Array.isArray(parsed)) return 'unknown';
+  private extractArtifactMetadata(parsed: any): { type: string; name: string; xmlns?: string } {
+    if (!Array.isArray(parsed)) return { type: 'unknown', name: 'unknown' };
     
     for (const item of parsed) {
       const tagName = Object.keys(item)[0];
       if (tagName === 'sequence' || tagName === 'localEntry' || 
           tagName === 'endpoint' || tagName === 'template') {
-        const attrs = this.extractAttributes(item[tagName]);
-        return attrs.name || attrs.key || 'unknown';
+        const attrs = item[':@'];
+        return {
+          type: tagName,
+          name: attrs?.name || attrs?.key || 'unknown',
+          xmlns: attrs?.['@_xmlns'] || attrs?.xmlns
+        };
       }
     }
-    return 'unknown';
+    return { type: 'unknown', name: 'unknown' };
+  }
+
+  /**
+   * Extract references from a chunk's content
+   */
+  private extractReferencesFromContent(content: string): string[] {
+    const refs = new Set<string>();
+    
+    // Pattern 1: <sequence key="SequenceName"/>
+    const sequenceRefPattern = /<sequence\s+key=["']([^"']+)["']\s*\/>/g;
+    let match;
+    while ((match = sequenceRefPattern.exec(content)) !== null) {
+      refs.add(`sequence:${match[1]}`);
+    }
+    
+    // Pattern 2: configKey="LocalEntryName"
+    const configKeyPattern = /configKey=["']([^"']+)["']/g;
+    while ((match = configKeyPattern.exec(content)) !== null) {
+      refs.add(`localEntry:${match[1]}`);
+    }
+    
+    // Pattern 3: <endpoint key="EndpointName"/>
+    const endpointRefPattern = /<endpoint\s+key=["']([^"']+)["']\s*\/>/g;
+    while ((match = endpointRefPattern.exec(content)) !== null) {
+      refs.add(`endpoint:${match[1]}`);
+    }
+    
+    // Pattern 4: <call-template target="TemplateName"/>
+    const templateRefPattern = /<call-template\s+target=["']([^"']+)["']/g;
+    while ((match = templateRefPattern.exec(content)) !== null) {
+      refs.add(`template:${match[1]}`);
+    }
+    
+    return Array.from(refs);
   }
 
   /**
@@ -337,6 +418,12 @@ export class XMLChunker {
       intent: semanticIntent,
       context,
     });
+    
+    // Extract references from this chunk's content
+    const chunkReferences = this.extractReferencesFromContent(content);
+    if (chunkReferences.length > 0) {
+      context.references = chunkReferences;
+    }
     
     // Check if this is a standalone artifact definition
     const isStandaloneArtifact = filePath.includes('/sequences/') || 
@@ -553,6 +640,9 @@ export class XMLChunker {
     if (context.resource?.method) parts.push(`Method: ${context.resource.method}`);
     if (context.resource?.uriTemplate) parts.push(`URI: ${context.resource.uriTemplate}`);
     if (context.sequence) parts.push(`Sequence: ${context.sequence}`);
+    if (context.references && context.references.length > 0) {
+      parts.push(`Uses: ${context.references.join(', ')}`);
+    }
     return parts.join(' ');
   }
 
