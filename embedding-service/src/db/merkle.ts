@@ -42,6 +42,33 @@ export interface MerkleLeaf {
         name?: string;
         xmlns?: string;
       };
+      // NEW: Support for additional artifact types
+      proxyService?: {
+        name?: string;
+        transports?: string;
+        xmlns?: string;
+      };
+      messageStore?: {
+        name?: string;
+        type?: string;
+        xmlns?: string;
+      };
+      messageProcessor?: {
+        name?: string;
+        type?: string;
+        messageStore?: string;
+        xmlns?: string;
+      };
+      dataService?: {
+        name?: string;
+        enableBatchRequests?: boolean;
+        xmlns?: string;
+      };
+      task?: {
+        name?: string;
+        trigger?: string;
+        xmlns?: string;
+      };
       references?: string[];
     };
   };
@@ -76,10 +103,13 @@ export function computeChunkHash(
  * This allows efficient change detection at any level of the tree
  */
 export function computeNodeHash(children: (MerkleNode | MerkleLeaf)[]): string {
+  if (children.length === 0) {
+    throw new Error("Cannot compute a node hash with zero children.");
+  }
   const childHashes = children.map(child => 
     'hash' in child ? child.hash : child.contentHash
   );
-  const combined = childHashes.join('|');
+  const combined = childHashes.sort().join('|');
   return createHash('sha256').update(combined).digest('hex');
 }
 
@@ -96,6 +126,12 @@ export function buildMerkleTree(leaves: MerkleLeaf[]): MerkleNode {
     if (ctx.sequence && typeof ctx.sequence === 'object') return ctx.sequence.name || 'unknown';
     if (ctx.endpoint?.name) return ctx.endpoint.name;
     if (ctx.template?.name) return ctx.template.name;
+    // NEW: Support for additional artifact types
+    if (ctx.proxyService?.name) return ctx.proxyService.name;
+    if (ctx.messageStore?.name) return ctx.messageStore.name;
+    if (ctx.messageProcessor?.name) return ctx.messageProcessor.name;
+    if (ctx.dataService?.name) return ctx.dataService.name;
+    if (ctx.task?.name) return ctx.task.name;
     return 'unknown';
   });
   

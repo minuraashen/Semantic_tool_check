@@ -54,6 +54,33 @@ export interface XMLChunk {
       name?: string;
       xmlns?: string;
     };
+    // NEW: Support for additional artifact types
+    proxyService?: {
+      name?: string;
+      transports?: string;
+      xmlns?: string;
+    };
+    messageStore?: {
+      name?: string;
+      type?: string;
+      xmlns?: string;
+    };
+    messageProcessor?: {
+      name?: string;
+      type?: string;
+      messageStore?: string;
+      xmlns?: string;
+    };
+    dataService?: {
+      name?: string;
+      enableBatchRequests?: boolean;
+      xmlns?: string;
+    };
+    task?: {
+      name?: string;
+      trigger?: string;
+      xmlns?: string;
+    };
     references?: string[];
   };
   // NEW: Cross-file sequence tracking
@@ -93,6 +120,37 @@ interface SemanticContext {
     name?: string;
     xmlns?: string;
   };
+  // NEW: Support for Proxy Services (alternative to REST APIs)
+  proxyService?: {
+    name?: string;
+    transports?: string;  // "http https jms"
+    xmlns?: string;
+  };
+  // NEW: Support for Message Stores (async messaging)
+  messageStore?: {
+    name?: string;
+    type?: string;  // "jms" | "jdbc" | "rabbitmq" | "resequence" | "wso2mb" | "in-memory" | "custom"
+    xmlns?: string;
+  };
+  // NEW: Support for Message Processors (async delivery)
+  messageProcessor?: {
+    name?: string;
+    type?: string;  // "sampling" | "scheduled-forwarding" | "scheduled-failover-forwarding"
+    messageStore?: string;  // Reference to message store name
+    xmlns?: string;
+  };
+  // NEW: Support for Data Services (database integration)
+  dataService?: {
+    name?: string;
+    enableBatchRequests?: boolean;
+    xmlns?: string;
+  };
+  // NEW: Support for Tasks (scheduled execution)
+  task?: {
+    name?: string;
+    trigger?: string;  // "simple" | "cron"
+    xmlns?: string;
+  };
   references?: string[];  // What this chunk calls/uses
 }
 
@@ -126,12 +184,17 @@ export class XMLChunker {
     // Extract top-level context (API name or Sequence name)
     const rootContext: SemanticContext = {};
     
-    // Detect if this is a standalone artifact file (sequence, local-entry, endpoint, template)
-    const isStandaloneSequence = filePath.includes('/sequences/') || 
+    // Detect if this is a standalone artifact file (sequence, local-entry, endpoint, template, proxy, messageStore, messageProcessor, dataService, task)
+    const isStandaloneArtifact = filePath.includes('/sequences/') || 
                                   filePath.includes('/local-entries/') ||
                                   filePath.includes('/endpoints/') ||
-                                  filePath.includes('/templates/');
-    if (isStandaloneSequence) {
+                                  filePath.includes('/templates/') ||
+                                  filePath.includes('/proxy-services/') ||
+                                  filePath.includes('/message-stores/') ||
+                                  filePath.includes('/message-processors/') ||
+                                  filePath.includes('/data-services/') ||
+                                  filePath.includes('/tasks/');
+    if (isStandaloneArtifact) {
       const artifactMeta = this.extractArtifactMetadata(parsed);
       
       // Use artifact-specific context structure
@@ -155,6 +218,37 @@ export class XMLChunker {
           name: artifactMeta.name,
           xmlns: artifactMeta.xmlns
         };
+      } else if (artifactMeta.type === 'proxyService') {
+        rootContext.proxyService = {
+          name: artifactMeta.name,
+          transports: artifactMeta.additionalInfo?.transports,
+          xmlns: artifactMeta.xmlns
+        };
+      } else if (artifactMeta.type === 'messageStore') {
+        rootContext.messageStore = {
+          name: artifactMeta.name,
+          type: artifactMeta.additionalInfo?.storeType,
+          xmlns: artifactMeta.xmlns
+        };
+      } else if (artifactMeta.type === 'messageProcessor') {
+        rootContext.messageProcessor = {
+          name: artifactMeta.name,
+          type: artifactMeta.additionalInfo?.processorType,
+          messageStore: artifactMeta.additionalInfo?.messageStore,
+          xmlns: artifactMeta.xmlns
+        };
+      } else if (artifactMeta.type === 'dataService') {
+        rootContext.dataService = {
+          name: artifactMeta.name,
+          enableBatchRequests: artifactMeta.additionalInfo?.enableBatchRequests,
+          xmlns: artifactMeta.xmlns
+        };
+      } else if (artifactMeta.type === 'task') {
+        rootContext.task = {
+          name: artifactMeta.name,
+          trigger: artifactMeta.additionalInfo?.trigger,
+          xmlns: artifactMeta.xmlns
+        };
       }
     } else {
       // For API files, extract API name
@@ -175,18 +269,108 @@ export class XMLChunker {
    * Extract sequence/artifact metadata from standalone files
    * Handles: sequences, local-entries, endpoints, templates
    */
-  private extractArtifactMetadata(parsed: any): { type: string; name: string; xmlns?: string } {
+  private extractArtifactMetadata(parsed: any): { type: string; name: string; xmlns?: string; additionalInfo?: any } {
     if (!Array.isArray(parsed)) return { type: 'unknown', name: 'unknown' };
     
     for (const item of parsed) {
       const tagName = Object.keys(item)[0];
+      const attrs = item[':@'];
+      
+      // Existing artifact types
       if (tagName === 'sequence' || tagName === 'localEntry' || 
           tagName === 'endpoint' || tagName === 'template') {
-        const attrs = item[':@'];
         return {
           type: tagName,
           name: attrs?.name || attrs?.key || 'unknown',
           xmlns: attrs?.['@_xmlns'] || attrs?.xmlns
+        };
+      }
+      
+      // NEW: Proxy Service detection
+      if (tagName === 'proxy') {
+        return {
+          type: 'proxyService',
+          name: attrs?.name || 'unknown',
+          xmlns: attrs?.['@_xmlns'] || attrs?.xmlns,
+          additionalInfo: {
+            transports: attrs?.transports || 'http https'
+          }
+        };
+      }
+      
+      // NEW: Message Store detection
+      if (tagName === 'messageStore') {
+        // Detect type from class name
+        const className = attrs?.class || '';
+        let storeType = 'custom';
+        if (className.includes('JmsStore')) storeType = 'jms';
+        else if (className.includes('JDBCMessageStore')) storeType = 'jdbc';
+        else if (className.includes('RabbitMQStore')) storeType = 'rabbitmq';
+        else if (className.includes('ResequenceMessageStore')) storeType = 'resequence';
+        else if (className.includes('WSO2MBMessageStore')) storeType = 'wso2mb';
+        else if (className.includes('InMemoryMessageStore')) storeType = 'in-memory';
+        
+        return {
+          type: 'messageStore',
+          name: attrs?.name || 'unknown',
+          xmlns: attrs?.['@_xmlns'] || attrs?.xmlns,
+          additionalInfo: { storeType }
+        };
+      }
+      
+      // NEW: Message Processor detection
+      if (tagName === 'messageProcessor') {
+        const className = attrs?.class || '';
+        let processorType = 'custom';
+        if (className.includes('MessageSamplingProcessor')) processorType = 'sampling';
+        else if (className.includes('ScheduledMessageForwardingProcessor')) processorType = 'scheduled-forwarding';
+        else if (className.includes('ScheduledFailoverMessageForwardingProcessor')) processorType = 'scheduled-failover-forwarding';
+        
+        // Extract message store reference from parameters
+        let messageStoreName = '';
+        if (Array.isArray(item.messageProcessor)) {
+          for (const child of item.messageProcessor) {
+            if (child.parameter && Array.isArray(child.parameter)) {
+              const storeParam = child.parameter.find((p: any) => p[':@']?.name === 'message.store');
+              if (storeParam) {
+                messageStoreName = storeParam['#text'] || '';
+              }
+            }
+          }
+        }
+        
+        return {
+          type: 'messageProcessor',
+          name: attrs?.name || 'unknown',
+          xmlns: attrs?.['@_xmlns'] || attrs?.xmlns,
+          additionalInfo: {
+            processorType,
+            messageStore: messageStoreName
+          }
+        };
+      }
+      
+      // NEW: Data Service detection
+      if (tagName === 'data') {
+        return {
+          type: 'dataService',
+          name: attrs?.name || 'unknown',
+          xmlns: attrs?.['@_xmlns'] || attrs?.xmlns,
+          additionalInfo: {
+            enableBatchRequests: attrs?.enableBatchRequests === 'true'
+          }
+        };
+      }
+      
+      // NEW: Task detection
+      if (tagName === 'task') {
+        return {
+          type: 'task',
+          name: attrs?.name || 'unknown',
+          xmlns: attrs?.['@_xmlns'] || attrs?.xmlns,
+          additionalInfo: {
+            trigger: item.task?.find((child: any) => child.trigger) ? 'defined' : 'simple'
+          }
         };
       }
     }

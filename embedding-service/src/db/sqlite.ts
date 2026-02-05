@@ -43,6 +43,33 @@ export interface ChunkMetadata {
       name?: string;
       xmlns?: string;
     };
+    // NEW: Support for additional artifact types
+    proxyService?: {
+      name?: string;
+      transports?: string;
+      xmlns?: string;
+    };
+    messageStore?: {
+      name?: string;
+      type?: string;
+      xmlns?: string;
+    };
+    messageProcessor?: {
+      name?: string;
+      type?: string;
+      messageStore?: string;
+      xmlns?: string;
+    };
+    dataService?: {
+      name?: string;
+      enableBatchRequests?: boolean;
+      xmlns?: string;
+    };
+    task?: {
+      name?: string;
+      trigger?: string;
+      xmlns?: string;
+    };
     references?: string[];
   };
   // NEW: Cross-file sequence tracking
