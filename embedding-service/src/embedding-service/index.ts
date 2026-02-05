@@ -2,23 +2,19 @@ import * as path from 'path';
 import { SQLiteDB } from '../db/sqlite';
 import { Embedder } from './embedder';
 import { Pipeline } from './pipeline';
+import { config, getProjectPaths } from '../config';
+import { artifactRegistry } from './artifact-registry';
 
-// Configuration
-const rootDir = path.resolve(__dirname, '../../');
-const config = {
-  pollIntervalMs: 10000,
-  workspaceRoot: path.resolve(rootDir, '../'),
-  projectFolders: ['BankIntegration', 'Hotelintegration'],
-  artifactsSubPath: 'src/main/wso2mi/artifacts',
-  dbPath: path.resolve(rootDir, 'data/embeddings.db'),
-  modelPath: path.resolve(rootDir, 'models/model_quantized.onnx'),
-};
-
-function getProjectPaths(): string[] {
-  return config.projectFolders.map(folder => 
-    path.join(config.workspaceRoot, folder, config.artifactsSubPath)
-  );
-}
+/**
+ * Embedding Service
+ * 
+ * Background service for generating and managing code embeddings from
+ * WSO2 MI XML configuration files with semantic chunking and cross-artifact tracking.
+ * 
+ * Now uses:
+ * - Centralized config module for all settings
+ * - Plugin-based artifact registry for extensibility
+ */
 
 export class EmbeddingService {
   private db: SQLiteDB;
@@ -30,7 +26,7 @@ export class EmbeddingService {
   constructor() {
     this.db = new SQLiteDB(config.dbPath);
     this.embedder = new Embedder();
-    this.pipeline = new Pipeline(this.db, this.embedder);
+    this.pipeline = new Pipeline(this.db, this.embedder, artifactRegistry);
   }
 
   async start(): Promise<void> {
@@ -43,11 +39,20 @@ export class EmbeddingService {
     console.log(`Model: ${config.modelPath}`);
     console.log(`Database: ${config.dbPath}`);
     console.log(`Poll interval: ${config.pollIntervalMs}ms`);
+    console.log(`Max tokens: ${config.maxTokens}`);
+
+    // Load custom plugins if available
+    try {
+      await artifactRegistry.loadPluginsFromDirectory(config.pluginsPath);
+      console.log(`Plugins directory: ${config.pluginsPath}`);
+    } catch (error) {
+      console.log('No custom plugins loaded');
+    }
 
     await this.embedder.initialize(config.modelPath);
     console.log('Embedder initialized');
 
-    const directories = getProjectPaths();
+    const directories = getProjectPaths(config);
     console.log(`Watching directories: ${directories.join(', ')}`);
 
     await this.pipeline.processInitial(directories);

@@ -65,6 +65,14 @@ export interface ChunkMetadata {
       enableBatchRequests?: boolean;
       xmlns?: string;
     };
+    query?: {
+      id?: string;
+      useConfig?: string;
+    };
+    operation?: {
+      name?: string;
+      callsQuery?: string;
+    };
     task?: {
       name?: string;
       trigger?: string;

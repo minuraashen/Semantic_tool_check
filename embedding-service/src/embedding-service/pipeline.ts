@@ -2,16 +2,18 @@ import { Watcher, FileChange } from './watcher';
 import { XMLChunker } from './chunker';
 import { Embedder } from './embedder';
 import { SQLiteDB, ChunkMetadata } from '../db/sqlite';
+import { ArtifactRegistry, artifactRegistry } from './artifact-registry';
 import { MerkleLeaf, buildMerkleTree, findChangedLeaves } from '../db/merkle';
 
 /**
- * PHASE 6: Updated Pipeline with Incremental Embedding
+ * Pipeline with Incremental Embedding and Plugin Support
  * 
- * Key changes:
+ * Key features:
  * - Build Merkle tree from new chunks
  * - Compare with existing chunks by content hash
  * - Only re-embed chunks with changed content hashes
  * - Reuse embeddings from unchanged chunks
+ * - Uses ArtifactRegistry for extensible artifact detection
  */
 
 export class Pipeline {
@@ -19,10 +21,12 @@ export class Pipeline {
   private chunker: XMLChunker;
   private embedder: Embedder;
   private db: SQLiteDB;
+  private registry: ArtifactRegistry;
 
-  constructor(db: SQLiteDB, embedder: Embedder) {
+  constructor(db: SQLiteDB, embedder: Embedder, registry?: ArtifactRegistry) {
     this.watcher = new Watcher();
-    this.chunker = new XMLChunker(embedder); // Pass embedder for token counting
+    this.registry = registry || artifactRegistry;
+    this.chunker = new XMLChunker(embedder, this.registry);
     this.embedder = embedder;
     this.db = db;
   }
@@ -30,7 +34,7 @@ export class Pipeline {
   async processInitial(directories: string[]): Promise<void> {
     console.log('Initial processing started...');
     const changes = await this.watcher.scanForChanges(directories);
-    
+
     console.log(`Found ${changes.length} files to process`);
     await this.processChanges(changes);
     console.log('Initial processing completed');
@@ -38,7 +42,7 @@ export class Pipeline {
 
   async processIncremental(directories: string[]): Promise<void> {
     const changes = await this.watcher.scanForChanges(directories);
-    
+
     if (changes.length === 0) {
       return;
     }
@@ -65,13 +69,13 @@ export class Pipeline {
 
   private async processFile(filePath: string, fileHash: string): Promise<void> {
     console.log(`Processing: ${filePath}`);
-    
+
     const chunks = await this.chunker.chunkFile(filePath);
     console.log(`  Extracted ${chunks.length} chunks`);
 
     // Get existing chunks for this file
     const existingChunks = this.db.getChunksByFile(filePath);
-    
+
     // Build map of existing chunks by content hash
     const existingByHash = new Map<string, typeof existingChunks[0]>();
     for (const chunk of existingChunks) {
@@ -84,7 +88,7 @@ export class Pipeline {
       if (existingHash !== fileHash) {
         console.log(`  File modified, deleting ${existingChunks.length} old chunks`);
         this.db.deleteChunksByFile(filePath);
-        existingByHash.clear(); // Clear map since we deleted everything
+        existingByHash.clear();
       }
     }
 
@@ -120,7 +124,7 @@ export class Pipeline {
 
       // Check if we have an existing chunk with same content hash
       const existingChunk = existingByHash.get(chunk.contentHash);
-      
+
       let embedding: Float32Array;
       if (existingChunk) {
         // Reuse existing embedding (content hasn't changed)
@@ -134,22 +138,21 @@ export class Pipeline {
 
       const newId = this.db.insertChunk(metadata, embedding);
       chunkIndexToDbId.set(chunk.chunkIndex, newId);
-      
-      // Link all artifact references (sequences, local-entries, endpoints, templates)
+
+      // Link all artifact references
       if (chunk.referencedSequences && chunk.referencedSequences.length > 0) {
         for (const artifactRef of chunk.referencedSequences) {
           const artifactDef = this.db.getSequenceDefinition(artifactRef);
           if (artifactDef) {
-            // Extract artifact name from "type:name" format
-            const artifactName = artifactRef.includes(':') 
-              ? artifactRef.split(':', 2)[1] 
+            const artifactName = artifactRef.includes(':')
+              ? artifactRef.split(':', 2)[1]
               : artifactRef;
             this.db.linkSequenceReference(newId, artifactDef.id, artifactName);
           }
         }
       }
     }
-    
+
     if (reusedCount > 0) {
       console.log(`  ♻️  Reused ${reusedCount} embeddings (unchanged content)`);
     }

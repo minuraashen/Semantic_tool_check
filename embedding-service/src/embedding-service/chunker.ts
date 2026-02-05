@@ -1,16 +1,18 @@
 import * as fs from 'fs';
 import { XMLParser } from 'fast-xml-parser';
 import { computeChunkHash } from '../db/merkle';
+import { ArtifactRegistry, artifactRegistry, ArtifactMetadata } from './artifact-registry';
+import { config } from '../config';
 
 /**
- * PHASE 2: Semantic, Hierarchical, Size-Aware XML Chunker
+ * Semantic, Hierarchical, Size-Aware XML Chunker (Refactored)
  * 
- * This chunker replaces token-agnostic splitting with semantic boundary detection.
- * Key improvements:
- * - Respects semantic boundaries (filter, switch, sequence, payloadFactory, etc.)
- * - Token-aware (≈300 token limit) but doesn't break semantic units
- * - Inherits context metadata (API name, method, URI, parent info)
- * - Allows overlapping for large atomic nodes
+ * Uses plugin-based ArtifactRegistry for extensible artifact detection.
+ * Key improvements over previous version:
+ * - No hardcoded artifact type lists - uses registry
+ * - No hardcoded semantic boundaries - queries registry
+ * - No hardcoded mediator types - queries registry
+ * - Configurable token limit (default: 256 for all-MiniLM-L6-v2)
  */
 
 export interface XMLChunk {
@@ -24,77 +26,21 @@ export interface XMLChunk {
   content: string;
   parentChunkId: number | null;
   embeddingText: string;
-  // NEW: Semantic metadata for Merkle tree
-  semanticType: string;   // filter | payloadFactory | sequence | resource | api
-  semanticIntent: string; // validation | transformation | delegation | response
-  contentHash: string;    // Hash of content + metadata
-  context: {
-    api?: {
-      name?: string;
-      context?: string;
-      xmlns?: string;
-    };
-    resource?: {
-      method?: string;
-      uriTemplate?: string;
-    };
-    sequence?: string | {
-      name?: string;
-      xmlns?: string;
-    };
-    localEntry?: {
-      key?: string;
-      xmlns?: string;
-    };
-    endpoint?: {
-      name?: string;
-      xmlns?: string;
-    };
-    template?: {
-      name?: string;
-      xmlns?: string;
-    };
-    // NEW: Support for additional artifact types
-    proxyService?: {
-      name?: string;
-      transports?: string;
-      xmlns?: string;
-    };
-    messageStore?: {
-      name?: string;
-      type?: string;
-      xmlns?: string;
-    };
-    messageProcessor?: {
-      name?: string;
-      type?: string;
-      messageStore?: string;
-      xmlns?: string;
-    };
-    dataService?: {
-      name?: string;
-      enableBatchRequests?: boolean;
-      xmlns?: string;
-    };
-    task?: {
-      name?: string;
-      trigger?: string;
-      xmlns?: string;
-    };
-    references?: string[];
-  };
-  // NEW: Cross-file sequence tracking
-  sequenceKey?: string;              // "CreateBookingSequence" (if this IS a sequence definition)
-  isSequenceDefinition?: boolean;    // true if standalone sequence file
-  referencedSequences?: string[];    // ["CreateBookingSequence", "ErrorHandler"] (if this calls sequences)
+  semanticType: string;
+  semanticIntent: string;
+  contentHash: string;
+  context: SemanticContext;
+  sequenceKey?: string;
+  isSequenceDefinition?: boolean;
+  referencedSequences?: string[];
 }
 
-interface LineRange {
-  start: number;
-  end: number;
-}
-
-interface SemanticContext {
+/**
+ * Semantic context with flexible artifact metadata
+ * Uses Record type to support any artifact type from registry
+ */
+export interface SemanticContext {
+  // Common context types
   api?: {
     name?: string;
     context?: string;
@@ -108,60 +54,43 @@ interface SemanticContext {
     name?: string;
     xmlns?: string;
   };
-  localEntry?: {
-    key?: string;
+  // Generic artifact context (for any plugin-provided artifacts)
+  artifact?: {
+    type: string;
+    name: string;
     xmlns?: string;
+    [key: string]: any;
   };
-  endpoint?: {
+  // Data service components
+  query?: {
+    id?: string;
+    useConfig?: string;
+  };
+  operation?: {
     name?: string;
-    xmlns?: string;
+    callsQuery?: string;
   };
-  template?: {
-    name?: string;
-    xmlns?: string;
-  };
-  // NEW: Support for Proxy Services (alternative to REST APIs)
-  proxyService?: {
-    name?: string;
-    transports?: string;  // "http https jms"
-    xmlns?: string;
-  };
-  // NEW: Support for Message Stores (async messaging)
-  messageStore?: {
-    name?: string;
-    type?: string;  // "jms" | "jdbc" | "rabbitmq" | "resequence" | "wso2mb" | "in-memory" | "custom"
-    xmlns?: string;
-  };
-  // NEW: Support for Message Processors (async delivery)
-  messageProcessor?: {
-    name?: string;
-    type?: string;  // "sampling" | "scheduled-forwarding" | "scheduled-failover-forwarding"
-    messageStore?: string;  // Reference to message store name
-    xmlns?: string;
-  };
-  // NEW: Support for Data Services (database integration)
-  dataService?: {
-    name?: string;
-    enableBatchRequests?: boolean;
-    xmlns?: string;
-  };
-  // NEW: Support for Tasks (scheduled execution)
-  task?: {
-    name?: string;
-    trigger?: string;  // "simple" | "cron"
-    xmlns?: string;
-  };
-  references?: string[];  // What this chunk calls/uses
+  references?: string[];
+  // Allow dynamic extension
+  [key: string]: any;
+}
+
+interface LineRange {
+  start: number;
+  end: number;
 }
 
 export class XMLChunker {
   private chunkCounter = 0;
   private lastSearchPosition: number = 0;
-  private readonly MAX_TOKENS = 300; // Token limit constraint
-  private embedder: any; // Embedder instance for token counting
+  private readonly maxTokens: number;
+  private embedder: any;
+  private registry: ArtifactRegistry;
 
-  constructor(embedder?: any) {
+  constructor(embedder?: any, registry?: ArtifactRegistry) {
     this.embedder = embedder;
+    this.registry = registry || artifactRegistry;
+    this.maxTokens = config.maxTokens; // Default: 256
   }
 
   async chunkFile(filePath: string): Promise<XMLChunk[]> {
@@ -169,7 +98,7 @@ export class XMLChunker {
     this.lastSearchPosition = 0;
     const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
     const lines = xmlContent.split('\n');
-    
+
     const parser = new XMLParser({
       ignoreAttributes: false,
       attributeNamePrefix: '',
@@ -180,274 +109,180 @@ export class XMLChunker {
 
     const parsed = parser.parse(xmlContent);
     const chunks: XMLChunk[] = [];
-    
-    // Extract top-level context (API name or Sequence name)
-    const rootContext: SemanticContext = {};
-    
-    // Detect if this is a standalone artifact file (sequence, local-entry, endpoint, template, proxy, messageStore, messageProcessor, dataService, task)
-    const isStandaloneArtifact = filePath.includes('/sequences/') || 
-                                  filePath.includes('/local-entries/') ||
-                                  filePath.includes('/endpoints/') ||
-                                  filePath.includes('/templates/') ||
-                                  filePath.includes('/proxy-services/') ||
-                                  filePath.includes('/message-stores/') ||
-                                  filePath.includes('/message-processors/') ||
-                                  filePath.includes('/data-services/') ||
-                                  filePath.includes('/tasks/');
-    if (isStandaloneArtifact) {
-      const artifactMeta = this.extractArtifactMetadata(parsed);
-      
-      // Use artifact-specific context structure
-      if (artifactMeta.type === 'sequence') {
-        rootContext.sequence = {
-          name: artifactMeta.name,
-          xmlns: artifactMeta.xmlns
-        };
-      } else if (artifactMeta.type === 'localEntry') {
-        rootContext.localEntry = {
-          key: artifactMeta.name,
-          xmlns: artifactMeta.xmlns
-        };
-      } else if (artifactMeta.type === 'endpoint') {
-        rootContext.endpoint = {
-          name: artifactMeta.name,
-          xmlns: artifactMeta.xmlns
-        };
-      } else if (artifactMeta.type === 'template') {
-        rootContext.template = {
-          name: artifactMeta.name,
-          xmlns: artifactMeta.xmlns
-        };
-      } else if (artifactMeta.type === 'proxyService') {
-        rootContext.proxyService = {
-          name: artifactMeta.name,
-          transports: artifactMeta.additionalInfo?.transports,
-          xmlns: artifactMeta.xmlns
-        };
-      } else if (artifactMeta.type === 'messageStore') {
-        rootContext.messageStore = {
-          name: artifactMeta.name,
-          type: artifactMeta.additionalInfo?.storeType,
-          xmlns: artifactMeta.xmlns
-        };
-      } else if (artifactMeta.type === 'messageProcessor') {
-        rootContext.messageProcessor = {
-          name: artifactMeta.name,
-          type: artifactMeta.additionalInfo?.processorType,
-          messageStore: artifactMeta.additionalInfo?.messageStore,
-          xmlns: artifactMeta.xmlns
-        };
-      } else if (artifactMeta.type === 'dataService') {
-        rootContext.dataService = {
-          name: artifactMeta.name,
-          enableBatchRequests: artifactMeta.additionalInfo?.enableBatchRequests,
-          xmlns: artifactMeta.xmlns
-        };
-      } else if (artifactMeta.type === 'task') {
-        rootContext.task = {
-          name: artifactMeta.name,
-          trigger: artifactMeta.additionalInfo?.trigger,
-          xmlns: artifactMeta.xmlns
-        };
-      }
-    } else {
-      // For API files, extract API name
-      rootContext.api = {
-        name: this.extractApiName(parsed),
-      };
-    }
+
+    // Detect artifact type using registry
+    const rootContext = this.buildRootContext(parsed, filePath);
 
     this.processNode(parsed, xmlContent, lines, filePath, chunks, null, rootContext);
-    
+
     // Post-process: Extract sequence references from all chunks
     this.extractSequenceReferences(chunks, xmlContent);
-    
+
     return chunks;
   }
 
   /**
-   * Extract sequence/artifact metadata from standalone files
-   * Handles: sequences, local-entries, endpoints, templates
+   * Build root context by detecting artifact type from XML
+   * Uses registry instead of path-based detection
    */
-  private extractArtifactMetadata(parsed: any): { type: string; name: string; xmlns?: string; additionalInfo?: any } {
-    if (!Array.isArray(parsed)) return { type: 'unknown', name: 'unknown' };
-    
+  private buildRootContext(parsed: any, filePath: string): SemanticContext {
+    const context: SemanticContext = {};
+
+    // Try to detect artifact type from XML structure
+    const detected = this.registry.detectArtifactType(parsed);
+
+    if (detected) {
+      const { metadata } = detected;
+
+      // Map to appropriate context structure based on type
+      switch (metadata.type) {
+        case 'api':
+          context.api = {
+            name: metadata.name,
+            context: metadata.additionalInfo?.context,
+            xmlns: metadata.xmlns,
+          };
+          break;
+        case 'proxyService':
+          context.artifact = {
+            type: 'proxyService',
+            name: metadata.name,
+            transports: metadata.additionalInfo?.transports,
+            xmlns: metadata.xmlns,
+          };
+          break;
+        case 'sequence':
+          context.sequence = {
+            name: metadata.name,
+            xmlns: metadata.xmlns,
+          };
+          break;
+        default:
+          // Generic artifact context for all other types
+          context.artifact = {
+            type: metadata.type,
+            name: metadata.name,
+            xmlns: metadata.xmlns,
+            ...metadata.additionalInfo,
+          };
+          break;
+      }
+    } else {
+      // Fallback: try to extract API name for unknown types
+      context.api = {
+        name: this.extractApiName(parsed),
+      };
+    }
+
+    return context;
+  }
+
+  /**
+   * Check if artifact is a standalone definition (sequence, endpoint, etc.)
+   * Uses registry to detect rather than path-based checks
+   */
+  private isStandaloneArtifactDefinition(parsed: any): boolean {
+    const detected = this.registry.detectArtifactType(parsed);
+    if (!detected) return false;
+
+    // Artifact types that are typically standalone definitions
+    const standaloneTypes = ['sequence', 'localEntry', 'endpoint', 'template'];
+    return standaloneTypes.includes(detected.metadata.type);
+  }
+
+  /**
+   * SEMANTIC BOUNDARY DETECTION (Registry-Based)
+   * 
+   * Queries the artifact registry instead of hardcoded lists.
+   * Falls back to heuristics for unknown tags.
+   */
+  private isSemanticBoundary(tagName: string, attrs: Record<string, string> = {}): boolean {
+    // Query registry for known boundaries
+    if (this.registry.isSemanticBoundary(tagName)) {
+      return true;
+    }
+
+    // Heuristic fallback for unknown tags:
+    // Tags with identifying attributes suggest semantic units
+    const attrCount = Object.keys(attrs).filter(k => !k.startsWith('#')).length;
+    return attrCount > 0;
+  }
+
+  /**
+   * Check if tag is a resource type (uses registry)
+   */
+  private isResourceType(tagName: string): boolean {
+    return this.registry.isResourceType(tagName);
+  }
+
+  /**
+   * Check if tag is a mediator type (uses registry)
+   */
+  private isMediatorType(tagName: string): boolean {
+    // Query registry
+    if (this.registry.isMediatorTag(tagName)) {
+      return true;
+    }
+    // Heuristic: http.* patterns are mediators
+    return tagName.startsWith('http.');
+  }
+
+  /**
+   * Check if tag is atomic (should not be split)
+   */
+  private isAtomicNode(tagName: string): boolean {
+    return this.registry.isAtomicTag(tagName);
+  }
+
+  /**
+   * Extract API name from parsed XML structure
+   */
+  private extractApiName(parsed: any): string {
+    if (!Array.isArray(parsed)) return 'unknown';
+
     for (const item of parsed) {
-      const tagName = Object.keys(item)[0];
-      const attrs = item[':@'];
-      
-      // Existing artifact types
-      if (tagName === 'sequence' || tagName === 'localEntry' || 
-          tagName === 'endpoint' || tagName === 'template') {
-        return {
-          type: tagName,
-          name: attrs?.name || attrs?.key || 'unknown',
-          xmlns: attrs?.['@_xmlns'] || attrs?.xmlns
-        };
-      }
-      
-      // NEW: Proxy Service detection
-      if (tagName === 'proxy') {
-        return {
-          type: 'proxyService',
-          name: attrs?.name || 'unknown',
-          xmlns: attrs?.['@_xmlns'] || attrs?.xmlns,
-          additionalInfo: {
-            transports: attrs?.transports || 'http https'
-          }
-        };
-      }
-      
-      // NEW: Message Store detection
-      if (tagName === 'messageStore') {
-        // Detect type from class name
-        const className = attrs?.class || '';
-        let storeType = 'custom';
-        if (className.includes('JmsStore')) storeType = 'jms';
-        else if (className.includes('JDBCMessageStore')) storeType = 'jdbc';
-        else if (className.includes('RabbitMQStore')) storeType = 'rabbitmq';
-        else if (className.includes('ResequenceMessageStore')) storeType = 'resequence';
-        else if (className.includes('WSO2MBMessageStore')) storeType = 'wso2mb';
-        else if (className.includes('InMemoryMessageStore')) storeType = 'in-memory';
-        
-        return {
-          type: 'messageStore',
-          name: attrs?.name || 'unknown',
-          xmlns: attrs?.['@_xmlns'] || attrs?.xmlns,
-          additionalInfo: { storeType }
-        };
-      }
-      
-      // NEW: Message Processor detection
-      if (tagName === 'messageProcessor') {
-        const className = attrs?.class || '';
-        let processorType = 'custom';
-        if (className.includes('MessageSamplingProcessor')) processorType = 'sampling';
-        else if (className.includes('ScheduledMessageForwardingProcessor')) processorType = 'scheduled-forwarding';
-        else if (className.includes('ScheduledFailoverMessageForwardingProcessor')) processorType = 'scheduled-failover-forwarding';
-        
-        // Extract message store reference from parameters
-        let messageStoreName = '';
-        if (Array.isArray(item.messageProcessor)) {
-          for (const child of item.messageProcessor) {
-            if (child.parameter && Array.isArray(child.parameter)) {
-              const storeParam = child.parameter.find((p: any) => p[':@']?.name === 'message.store');
-              if (storeParam) {
-                messageStoreName = storeParam['#text'] || '';
-              }
-            }
-          }
-        }
-        
-        return {
-          type: 'messageProcessor',
-          name: attrs?.name || 'unknown',
-          xmlns: attrs?.['@_xmlns'] || attrs?.xmlns,
-          additionalInfo: {
-            processorType,
-            messageStore: messageStoreName
-          }
-        };
-      }
-      
-      // NEW: Data Service detection
-      if (tagName === 'data') {
-        return {
-          type: 'dataService',
-          name: attrs?.name || 'unknown',
-          xmlns: attrs?.['@_xmlns'] || attrs?.xmlns,
-          additionalInfo: {
-            enableBatchRequests: attrs?.enableBatchRequests === 'true'
-          }
-        };
-      }
-      
-      // NEW: Task detection
-      if (tagName === 'task') {
-        return {
-          type: 'task',
-          name: attrs?.name || 'unknown',
-          xmlns: attrs?.['@_xmlns'] || attrs?.xmlns,
-          additionalInfo: {
-            trigger: item.task?.find((child: any) => child.trigger) ? 'defined' : 'simple'
-          }
-        };
+      const tagName = Object.keys(item).find(key => key !== ':@');
+      if (!tagName) continue;
+
+      if (this.registry.isResourceType(tagName)) {
+        const attrs = item[':@'] || {};
+        return attrs.name || attrs['@_name'] || attrs.context || attrs['@_context'] || tagName;
       }
     }
-    return { type: 'unknown', name: 'unknown' };
+    return 'unknown';
   }
 
   /**
-   * Extract references from a chunk's content
-   */
-  private extractReferencesFromContent(content: string): string[] {
-    const refs = new Set<string>();
-    
-    // Pattern 1: <sequence key="SequenceName"/>
-    const sequenceRefPattern = /<sequence\s+key=["']([^"']+)["']\s*\/>/g;
-    let match;
-    while ((match = sequenceRefPattern.exec(content)) !== null) {
-      refs.add(`sequence:${match[1]}`);
-    }
-    
-    // Pattern 2: configKey="LocalEntryName"
-    const configKeyPattern = /configKey=["']([^"']+)["']/g;
-    while ((match = configKeyPattern.exec(content)) !== null) {
-      refs.add(`localEntry:${match[1]}`);
-    }
-    
-    // Pattern 3: <endpoint key="EndpointName"/>
-    const endpointRefPattern = /<endpoint\s+key=["']([^"']+)["']\s*\/>/g;
-    while ((match = endpointRefPattern.exec(content)) !== null) {
-      refs.add(`endpoint:${match[1]}`);
-    }
-    
-    // Pattern 4: <call-template target="TemplateName"/>
-    const templateRefPattern = /<call-template\s+target=["']([^"']+)["']/g;
-    while ((match = templateRefPattern.exec(content)) !== null) {
-      refs.add(`template:${match[1]}`);
-    }
-    
-    return Array.from(refs);
-  }
-
-  /**
-   * Extract all cross-artifact references from XML content
-   * Tracks:
-   * - <sequence key="..."/> - Sequence references
-   * - configKey="..." - Local entry references (e.g., http connectors)
-   * - <endpoint key="..."/> - Endpoint references
-   * - <call-template target="..."/> - Template references
-   * This enables comprehensive cross-artifact relationship tracking
+   * Extract cross-artifact references from XML content
    */
   private extractSequenceReferences(chunks: XMLChunk[], xmlContent: string): void {
     const allReferences = new Set<string>();
-    
+
     // Pattern 1: <sequence key="SequenceName"/>
     const sequenceRefPattern = /<sequence\s+key=["']([^"']+)["']\s*\/>/g;
     let match;
     while ((match = sequenceRefPattern.exec(xmlContent)) !== null) {
       allReferences.add(`sequence:${match[1]}`);
     }
-    
-    // Pattern 2: configKey="LocalEntryName" (for http.init, endpoints, etc.)
+
+    // Pattern 2: configKey="LocalEntryName"
     const configKeyPattern = /configKey=["']([^"']+)["']/g;
     while ((match = configKeyPattern.exec(xmlContent)) !== null) {
       allReferences.add(`localEntry:${match[1]}`);
     }
-    
+
     // Pattern 3: <endpoint key="EndpointName"/>
     const endpointRefPattern = /<endpoint\s+key=["']([^"']+)["']\s*\/>/g;
     while ((match = endpointRefPattern.exec(xmlContent)) !== null) {
       allReferences.add(`endpoint:${match[1]}`);
     }
-    
+
     // Pattern 4: <call-template target="TemplateName"/>
     const templateRefPattern = /<call-template\s+target=["']([^"']+)["']/g;
     while ((match = templateRefPattern.exec(xmlContent)) !== null) {
       allReferences.add(`template:${match[1]}`);
     }
-    
+
     // Attach references to all chunks in this file
     if (allReferences.size > 0) {
       const referencesArray = Array.from(allReferences);
@@ -457,51 +292,38 @@ export class XMLChunker {
     }
   }
 
-
   /**
-   * SEMANTIC BOUNDARY DETECTION
-   * 
-   * Nodes that represent semantic boundaries (not just structural):
-   * - resource: Defines an API endpoint with specific intent
-   * - inSequence/outSequence/faultSequence: Flow control boundaries
-   * - filter/switch: Conditional logic (decision points)
-   * - sequence (key-based): Reusable logic units
-   * - payloadFactory: Data transformation
-   * - respond: Response generation (terminal node)
-   * 
-   * These boundaries define "one primary intention" per chunk.
+   * Extract references from a single chunk's content
    */
-  private isSemanticBoundary(tagName: string): boolean {
-    return [
-      'resource', 'inSequence', 'outSequence', 'faultSequence',
-      'filter', 'switch', 'sequence', 'payloadFactory', 'respond'
-    ].includes(tagName);
-  }
+  private extractReferencesFromContent(content: string): string[] {
+    const refs = new Set<string>();
 
-  /**
-   * Extract API name from parsed XML structure
-   */
-  private extractApiName(parsed: any): string {
-    if (!Array.isArray(parsed)) return 'unknown';
-    
-    for (const item of parsed) {
-      const tagName = Object.keys(item)[0];
-      if (tagName === 'api' || tagName === 'proxy') {
-        const attrs = this.extractAttributes(item[tagName]);
-        return attrs.name || attrs.context || tagName;
-      }
+    const sequenceRefPattern = /<sequence\s+key=["']([^"']+)["']\s*\/>/g;
+    let match;
+    while ((match = sequenceRefPattern.exec(content)) !== null) {
+      refs.add(`sequence:${match[1]}`);
     }
-    return 'unknown';
+
+    const configKeyPattern = /configKey=["']([^"']+)["']/g;
+    while ((match = configKeyPattern.exec(content)) !== null) {
+      refs.add(`localEntry:${match[1]}`);
+    }
+
+    const endpointRefPattern = /<endpoint\s+key=["']([^"']+)["']\s*\/>/g;
+    while ((match = endpointRefPattern.exec(content)) !== null) {
+      refs.add(`endpoint:${match[1]}`);
+    }
+
+    const templateRefPattern = /<call-template\s+target=["']([^"']+)["']/g;
+    while ((match = templateRefPattern.exec(content)) !== null) {
+      refs.add(`template:${match[1]}`);
+    }
+
+    return Array.from(refs);
   }
 
   /**
    * EXCLUSIVE TOP-DOWN CHUNKING with token gating
-   * 
-   * Decision logic:
-   * 1. Compute token count of entire subtree + metadata
-   * 2. If tokenCount ≤ MAX_TOKENS: Emit ONE chunk, STOP (no descendants)
-   * 3. If tokenCount > MAX_TOKENS: Do NOT chunk, descend to children
-   * 4. Once a node becomes a chunk, traversal stops for that subtree
    */
   private processNode(
     node: any,
@@ -517,27 +339,28 @@ export class XMLChunker {
     for (const item of node) {
       const tagName = Object.keys(item).find(key => key !== ':@') || '';
       if (!tagName) continue;
-      
-      const element = item[tagName];
-      const nodeAttrs = item[':@'] || {};  // Attributes are at item level, not in element
 
-      // Update context based on node type (pass nodeAttrs, not element)
+      const element = item[tagName];
+      const nodeAttrs = item[':@'] || {};
+
+      // Update context based on node type
       const updatedContext = this.updateContext(tagName, nodeAttrs, context);
 
-      // Check if this is a chunkable node (resource, semantic boundary, or mediator)
-      const isChunkable = this.isResourceType(tagName) || this.isSemanticBoundary(tagName) || this.isMediatorType(tagName);
-      
+      // Check if this is a chunkable node
+      const isChunkable = this.isResourceType(tagName) ||
+        this.isSemanticBoundary(tagName, nodeAttrs) ||
+        this.isMediatorType(tagName);
+
       if (isChunkable) {
         // Token gating: Check if subtree fits within limit
         const range = this.findElementRange(tagName, this.getNodeName(tagName, element), lines);
         const content = this.extractContent(lines, range);
         const metadata = this.formatMetadata(updatedContext);
         const tokenCount = this.countTokens(content, metadata);
-        
-        if (tokenCount <= this.MAX_TOKENS) {
+
+        if (tokenCount <= this.maxTokens) {
           // Subtree fits → Emit chunk and STOP traversal
           this.createChunk(tagName, nodeAttrs, content, range, filePath, chunks, parentChunkId, updatedContext);
-          // HARD STOP: Do not descend into children
         } else {
           // Subtree too large → Do NOT chunk, descend to ALL children
           if (Array.isArray(element)) {
@@ -553,7 +376,6 @@ export class XMLChunker {
 
   /**
    * Update semantic context as we traverse the tree
-   * This metadata is inherited by all child chunks
    */
   private updateContext(tagName: string, attrs: Record<string, string>, parentContext: SemanticContext): SemanticContext {
     const newContext = { ...parentContext };
@@ -573,17 +395,26 @@ export class XMLChunker {
       newContext.sequence = tagName;
     } else if (tagName === 'sequence' && (attrs.key || attrs['@_key'])) {
       newContext.sequence = attrs.key || attrs['@_key'];
+    } else if (tagName === 'query') {
+      newContext.query = {
+        id: attrs.id || attrs['@_id'],
+        useConfig: attrs.useConfig || attrs['@_useConfig'],
+      };
+    } else if (tagName === 'operation') {
+      newContext.operation = {
+        name: attrs.name || attrs['@_name'],
+      };
     }
 
     return newContext;
   }
 
   /**
-   * Unified chunk creation (replaces chunkResource, chunkSemanticBoundary, chunkMediator)
+   * Create a chunk from the current node
    */
   private createChunk(
     tagName: string,
-    attrs: Record<string, string>,  // Now receives attrs directly
+    attrs: Record<string, string>,
     content: string,
     range: LineRange,
     filePath: string,
@@ -591,9 +422,10 @@ export class XMLChunker {
     parentChunkId: number | null,
     context: SemanticContext
   ): void {
-    const resourceName = attrs.name || attrs.key || attrs.context || tagName;
+    const resourceName = attrs.name || attrs['@_name'] || attrs.key || attrs['@_key'] ||
+      attrs.context || attrs['@_context'] || tagName;
     const chunkIndex = this.chunkCounter++;
-    
+
     const embeddingText = this.createEmbeddingText(tagName, resourceName, content, attrs);
     const semanticType = this.mapToSemanticType(tagName);
     const semanticIntent = this.inferIntent(tagName, attrs, content);
@@ -602,23 +434,18 @@ export class XMLChunker {
       intent: semanticIntent,
       context,
     });
-    
+
     // Extract references from this chunk's content
     const chunkReferences = this.extractReferencesFromContent(content);
     if (chunkReferences.length > 0) {
       context.references = chunkReferences;
     }
-    
-    // Check if this is a standalone artifact definition
-    const isStandaloneArtifact = filePath.includes('/sequences/') || 
-                                  filePath.includes('/local-entries/') ||
-                                  filePath.includes('/endpoints/') ||
-                                  filePath.includes('/templates/');
-    const sequenceKey = isStandaloneArtifact && 
-                       (tagName === 'sequence' || tagName === 'localEntry' || 
-                        tagName === 'endpoint' || tagName === 'template') 
-                       ? (attrs.name || attrs.key) : undefined;
-    
+
+    // Detect if this is a standalone artifact definition
+    const standaloneTypes = ['sequence', 'localEntry', 'endpoint', 'template'];
+    const isStandalone = standaloneTypes.includes(tagName);
+    const sequenceKey = isStandalone ? (attrs.name || attrs['@_name'] || attrs.key || attrs['@_key']) : undefined;
+
     chunks.push({
       filePath,
       resourceName,
@@ -635,175 +462,58 @@ export class XMLChunker {
       contentHash,
       context,
       sequenceKey,
-      isSequenceDefinition: isStandaloneArtifact && 
-                           (tagName === 'sequence' || tagName === 'localEntry' || 
-                            tagName === 'endpoint' || tagName === 'template'),
+      isSequenceDefinition: isStandalone,
       referencedSequences: [],
     });
   }
 
-  private chunkResource(
-    tagName: string,
-    element: any,
-    xmlContent: string,
-    lines: string[],
-    filePath: string,
-    chunks: XMLChunk[],
-    parentChunkId: number | null,
-    context: SemanticContext
-  ): void {
-    const attrs = this.extractAttributes(element);
-    const resourceName = attrs.name || attrs.context || tagName;
-    const range = this.findElementRange(tagName, resourceName, lines);
-    
-    const chunkIndex = this.chunkCounter++;
-    const content = this.extractContent(lines, range);
-    const embeddingText = this.createEmbeddingText(tagName, resourceName, content, attrs);
-    
-    // Determine semantic type and intent
-    const semanticType = 'resource';
-    const semanticIntent = this.inferIntent(tagName, attrs, content);
-    const contentHash = computeChunkHash(content, {
-      type: semanticType,
-      intent: semanticIntent,
-      context,
-    });
-    
-    // Check if this is a sequence/artifact definition (standalone file)
-    const isStandaloneArtifact = filePath.includes('/sequences/') || 
-                                  filePath.includes('/local-entries/') ||
-                                  filePath.includes('/endpoints/') ||
-                                  filePath.includes('/templates/');
-    const sequenceKey = isStandaloneArtifact && 
-                       (tagName === 'sequence' || tagName === 'localEntry' || 
-                        tagName === 'endpoint' || tagName === 'template') 
-                       ? (attrs.name || attrs.key) : undefined;
-    
-    chunks.push({
-      filePath,
-      resourceName,
-      resourceType: tagName,
-      chunkType: tagName,
-      chunkIndex,
-      startLine: range.start,
-      endLine: range.end,
-      content,
-      parentChunkId,
-      embeddingText,
-      semanticType,
-      semanticIntent,
-      contentHash,
-      context,
-      sequenceKey,
-      isSequenceDefinition: isStandaloneArtifact && 
-                           (tagName === 'sequence' || tagName === 'localEntry' || 
-                            tagName === 'endpoint' || tagName === 'template'),
-      referencedSequences: [], // Will be filled by extractSequenceReferences()
-    });
-
-    const currentChunkId = chunkIndex;
-
-    if (Array.isArray(element)) {
-      this.processNode(element, xmlContent, lines, filePath, chunks, currentChunkId, context);
-    }
-  }
-
   /**
-   * Determine if a node is atomic (should not be split)
-   * Atomic nodes: payloadFactory, respond, log, property
-   */
-  private isAtomicNode(tagName: string): boolean {
-    return ['payloadFactory', 'respond', 'log', 'property', 'variable'].includes(tagName);
-  }
-
-  /**
-   * Map XML tag to semantic type for Merkle tree
+   * Map XML tag to semantic type (extensible via patterns)
    */
   private mapToSemanticType(tagName: string): string {
-    const typeMap: Record<string, string> = {
-      'filter': 'filter',
-      'switch': 'filter',
-      'payloadFactory': 'payloadFactory',
-      'respond': 'response',
-      'inSequence': 'sequence',
-      'outSequence': 'sequence',
-      'faultSequence': 'sequence',
-      'sequence': 'sequence',
-      'resource': 'resource',
-      'api': 'api',
-      'proxy': 'api',
-    };
-    return typeMap[tagName] || 'mediator';
+    if (tagName === 'resource') return 'resource';
+    if (tagName === 'api' || tagName === 'proxy') return 'api';
+    if (tagName.includes('Sequence') || tagName === 'sequence') return 'sequence';
+    if (tagName === 'filter' || tagName === 'switch') return 'filter';
+    if (tagName === 'payloadFactory') return 'payloadFactory';
+    if (tagName === 'respond') return 'response';
+    if (tagName === 'config') return 'dataConfig';
+    if (tagName === 'query') return 'dataQuery';
+    if (tagName === 'operation') return 'dataOperation';
+    if (tagName === 'trigger') return 'trigger';
+    if (tagName === 'property') return 'property';
+
+    // Generic fallback
+    return 'component';
   }
 
   /**
-   * Infer semantic intent from tag name and content
-   * 
-   * Intent categories:
-   * - validation: filter, switch with conditions
-   * - transformation: payloadFactory, enrich
-   * - delegation: call, send, http.*
-   * - response: respond, payloadFactory in final position
-   * - error-handling: faultSequence
+   * Infer semantic intent from tag and content
    */
   private inferIntent(tagName: string, attrs: Record<string, string>, content: string): string {
-    // Validation: filter/switch with conditions
-    if (tagName === 'filter' || tagName === 'switch') {
-      return 'validation';
-    }
-    
-    // Transformation: payloadFactory, enrich
-    if (tagName === 'payloadFactory' || tagName === 'enrich') {
-      return 'transformation';
-    }
-    
-    // Delegation: call, send, http.*
-    if (tagName === 'call' || tagName === 'send' || tagName.startsWith('http.')) {
-      return 'delegation';
-    }
-    
-    // Response: respond
-    if (tagName === 'respond') {
-      return 'response';
-    }
-    
-    // Error handling: faultSequence
-    if (tagName === 'faultSequence') {
-      return 'error-handling';
-    }
-    
-    // Default: processing
+    if (tagName === 'filter' || tagName === 'switch') return 'validation';
+    if (tagName === 'payloadFactory' || tagName === 'enrich') return 'transformation';
+    if (tagName === 'call' || tagName === 'send' || tagName.startsWith('http.')) return 'delegation';
+    if (tagName === 'respond') return 'response';
+    if (tagName === 'faultSequence') return 'error-handling';
+    if (tagName === 'query' || tagName === 'operation') return 'data-access';
+    if (tagName === 'config' || tagName === 'property' || tagName === 'trigger') return 'configuration';
+
     return 'processing';
   }
 
   /**
-   * Count tokens using the model's actual tokenizer
-   * Includes both XML subtree content AND metadata text
+   * Count tokens using the model's tokenizer
    */
   private countTokens(content: string, metadata: string = ''): number {
     const fullText = content + ' ' + metadata;
-    
+
     if (this.embedder && this.embedder.countTokens) {
       return this.embedder.countTokens(fullText);
     }
-    
-    // Fallback to character approximation if embedder not available
+
+    // Fallback to character approximation
     return Math.ceil(fullText.length / 4);
-  }
-
-  private isResourceType(tagName: string): boolean {
-    return ['api', 'proxy', 'endpoint', 'localEntry', 'template', 'sequence'].includes(tagName);
-  }
-
-  private isMediatorType(tagName: string): boolean {
-    const mediators = [
-      'log', 'property', 'variable', 'call', 'send', 'drop', 
-      'enrich', 'clone', 'iterate', 'aggregate', 'cache', 
-      'throttle', 'validate', 'xslt', 'script',
-      'http.post', 'http.get', 'http.put', 'http.delete', 'http.patch'
-    ];
-    // Exclude semantic boundaries from mediators
-    return mediators.includes(tagName) && !this.isSemanticBoundary(tagName);
   }
 
   /**
@@ -811,7 +521,8 @@ export class XMLChunker {
    */
   private getNodeName(tagName: string, element: any): string {
     const attrs = this.extractAttributes(element);
-    return attrs.name || attrs.key || attrs.context || tagName;
+    return attrs.name || attrs['@_name'] || attrs.key || attrs['@_key'] ||
+      attrs.context || attrs['@_context'] || tagName;
   }
 
   /**
@@ -823,7 +534,13 @@ export class XMLChunker {
     if (context.api?.context) parts.push(`Context: ${context.api.context}`);
     if (context.resource?.method) parts.push(`Method: ${context.resource.method}`);
     if (context.resource?.uriTemplate) parts.push(`URI: ${context.resource.uriTemplate}`);
-    if (context.sequence) parts.push(`Sequence: ${context.sequence}`);
+    if (context.sequence) {
+      const seqName = typeof context.sequence === 'string' ? context.sequence : context.sequence.name;
+      parts.push(`Sequence: ${seqName}`);
+    }
+    if (context.artifact?.name) parts.push(`${context.artifact.type}: ${context.artifact.name}`);
+    if (context.query?.id) parts.push(`Query: ${context.query.id}`);
+    if (context.operation?.name) parts.push(`Operation: ${context.operation.name}`);
     if (context.references && context.references.length > 0) {
       parts.push(`Uses: ${context.references.join(', ')}`);
     }
@@ -832,21 +549,18 @@ export class XMLChunker {
 
   private extractAttributes(element: any): Record<string, string> {
     const attrs: Record<string, string> = {};
-    
-    // Case 1: element is an array (preserveOrder format)
+
     if (Array.isArray(element)) {
       for (const item of element) {
         if (item[':@']) {
           Object.assign(attrs, item[':@']);
-          break; // Only get attributes from first :@ marker
+          break;
         }
       }
-    }
-    // Case 2: element is an object with :@ directly
-    else if (element && element[':@']) {
+    } else if (element && element[':@']) {
       Object.assign(attrs, element[':@']);
     }
-    
+
     return attrs;
   }
 
@@ -855,16 +569,15 @@ export class XMLChunker {
     let endLine = -1;
     let depth = 0;
 
-    // Start searching from the last found position to avoid duplicates
     for (let i = this.lastSearchPosition; i < lines.length; i++) {
       const line = lines[i];
-      
+
       if (startLine === -1) {
         const openPattern = new RegExp(`<${tagName}[\\s>]`);
         if (openPattern.test(line)) {
           startLine = i + 1;
-          this.lastSearchPosition = i + 1; // Update last position
-          
+          this.lastSearchPosition = i + 1;
+
           if (line.includes('/>')) {
             endLine = i + 1;
             break;
@@ -874,7 +587,7 @@ export class XMLChunker {
       } else {
         const openPattern = new RegExp(`<${tagName}[\\s>]`);
         const closePattern = new RegExp(`</${tagName}>`);
-        
+
         if (openPattern.test(line) && !line.includes('/>')) {
           depth++;
         }
@@ -904,6 +617,11 @@ export class XMLChunker {
     if (filePath.includes('/proxy-services/')) return 'proxy';
     if (filePath.includes('/endpoints/')) return 'endpoint';
     if (filePath.includes('/local-entries/')) return 'localEntry';
+    if (filePath.includes('/templates/')) return 'template';
+    if (filePath.includes('/data-services/')) return 'dataService';
+    if (filePath.includes('/tasks/')) return 'task';
+    if (filePath.includes('/message-stores/')) return 'messageStore';
+    if (filePath.includes('/message-processors/')) return 'messageProcessor';
     return 'unknown';
   }
 
@@ -916,8 +634,8 @@ export class XMLChunker {
     const tokens: string[] = [tagName, resourceName];
 
     for (const [key, value] of Object.entries(attrs)) {
-      if (key !== 'xmlns' && !key.startsWith('xmlns:')) {
-        tokens.push(key, value);
+      if (key !== 'xmlns' && !key.startsWith('xmlns:') && !key.startsWith('@_xmlns')) {
+        tokens.push(key, String(value));
       }
     }
 
