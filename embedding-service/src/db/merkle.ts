@@ -76,9 +76,9 @@ export interface MerkleLeaf {
 
 export interface MerkleNode {
   hash: string;           // Hash of children hashes
-  level: string;          // 'api' | 'resource' | 'sequence' | 'leaf'
+  level: string;          // 'artifact' | 'resource' | 'sequence' | 'root'
   children: (MerkleNode | MerkleLeaf)[];
-  label: string;          // Human-readable label (API name, resource path, etc.)
+  label: string;          // Human-readable label (artifact name, resource path, etc.)
 }
 
 /**
@@ -115,18 +115,17 @@ export function computeNodeHash(children: (MerkleNode | MerkleLeaf)[]): string {
 
 /**
  * Build Merkle tree from flat list of chunks
- * Groups chunks hierarchically: API → Resource → Sequence → Leaf
+ * Groups chunks hierarchically: Artifact → Resource → Sequence → Leaf
  */
 export function buildMerkleTree(leaves: MerkleLeaf[]): MerkleNode {
-  // Group by API (or artifact type for standalone artifacts)
-  const apiGroups = groupBy(leaves, leaf => {
+  // Group by artifact (API, ProxyService, Task, etc.)
+  const artifactGroups = groupBy(leaves, leaf => {
     const ctx = leaf.metadata.context;
     if (ctx.api?.name) return ctx.api.name;
     if (ctx.localEntry?.key) return ctx.localEntry.key;
     if (ctx.sequence && typeof ctx.sequence === 'object') return ctx.sequence.name || 'unknown';
     if (ctx.endpoint?.name) return ctx.endpoint.name;
     if (ctx.template?.name) return ctx.template.name;
-    // NEW: Support for additional artifact types
     if (ctx.proxyService?.name) return ctx.proxyService.name;
     if (ctx.messageStore?.name) return ctx.messageStore.name;
     if (ctx.messageProcessor?.name) return ctx.messageProcessor.name;
@@ -135,18 +134,20 @@ export function buildMerkleTree(leaves: MerkleLeaf[]): MerkleNode {
     return 'unknown';
   });
   
-  const apiNodes: MerkleNode[] = [];
+  const artifactNodes: MerkleNode[] = [];
   
-  for (const [apiName, apiLeaves] of Object.entries(apiGroups)) {
-    // Group by resource within API
-    const resourceGroups = groupBy(apiLeaves, leaf => {
+  // Sort entries for deterministic tree structure
+  for (const [artifactName, artifactLeaves] of Object.entries(artifactGroups).sort(([a], [b]) => a.localeCompare(b))) {
+    // Group by resource within artifact
+    const resourceGroups = groupBy(artifactLeaves, leaf => {
       const resource = leaf.metadata.context.resource;
       return resource ? `${resource.method} ${resource.uriTemplate}` : 'root';
     });
     
     const resourceNodes: MerkleNode[] = [];
     
-    for (const [resourceName, resourceLeaves] of Object.entries(resourceGroups)) {
+    // Sort entries for deterministic tree structure
+    for (const [resourceName, resourceLeaves] of Object.entries(resourceGroups).sort(([a], [b]) => a.localeCompare(b))) {
       // Group by sequence within resource
       const sequenceGroups = groupBy(resourceLeaves, leaf => {
         const seq = leaf.metadata.context.sequence;
@@ -157,7 +158,8 @@ export function buildMerkleTree(leaves: MerkleLeaf[]): MerkleNode {
       
       const sequenceNodes: (MerkleNode | MerkleLeaf)[] = [];
       
-      for (const [sequenceName, sequenceLeaves] of Object.entries(sequenceGroups)) {
+      // Sort entries for deterministic tree structure
+      for (const [sequenceName, sequenceLeaves] of Object.entries(sequenceGroups).sort(([a], [b]) => a.localeCompare(b))) {
         if (sequenceLeaves.length === 1) {
           // Single leaf - add directly
           sequenceNodes.push(sequenceLeaves[0]);
@@ -182,20 +184,20 @@ export function buildMerkleTree(leaves: MerkleLeaf[]): MerkleNode {
       resourceNodes.push(resourceNode);
     }
     
-    const apiNode: MerkleNode = {
+    const artifactNode: MerkleNode = {
       hash: computeNodeHash(resourceNodes),
-      level: 'api',
+      level: 'artifact',
       children: resourceNodes,
-      label: apiName,
+      label: artifactName,
     };
-    apiNodes.push(apiNode);
+    artifactNodes.push(artifactNode);
   }
   
   // Root node
   return {
-    hash: computeNodeHash(apiNodes),
+    hash: computeNodeHash(artifactNodes),
     level: 'root',
-    children: apiNodes,
+    children: artifactNodes,
     label: 'root',
   };
 }
