@@ -506,7 +506,7 @@ export class XMLChunker {
    * Count tokens using the model's tokenizer
    */
   private countTokens(content: string, metadata: string = ''): number {
-    const fullText =  metadata + ' ' + content;
+    const fullText = metadata + ' ' + content;
 
     if (this.embedder && this.embedder.countTokens) {
       return this.embedder.countTokens(fullText);
@@ -625,6 +625,14 @@ export class XMLChunker {
     return 'unknown';
   }
 
+  /**
+   * Create natural text representation for embedding
+   * Removes all XML angle brackets and symbols for cleaner, more semantic embeddings
+   * 
+   * Example transformation:
+   *   <api context="/orchestrate"><resource methods="POST">
+   *   → api context=/orchestrate resource methods=POST
+   */
   private createEmbeddingText(
     tagName: string,
     resourceName: string,
@@ -633,21 +641,38 @@ export class XMLChunker {
   ): string {
     const tokens: string[] = [tagName, resourceName];
 
+    // Add attributes from current node
     for (const [key, value] of Object.entries(attrs)) {
       if (key !== 'xmlns' && !key.startsWith('xmlns:') && !key.startsWith('@_xmlns')) {
-        tokens.push(key, String(value));
+        tokens.push(`${key}=${value}`);
       }
     }
 
-    const contentTokens = content
-      // .replace(/<[^>]+>/g, ' ')
-      // .replace(/[^\w\s]/g, ' ')
-      // .split(/\s+/)
-      // .filter(t => t.length > 2 && t.length < 50);
+    // Comprehensive XML preprocessing: Remove all angle brackets and create natural text
+    const cleanedContent = content
+      // Extract tag names and attributes from opening tags: <tag attr="val"> → tag attr="val"
+      .replace(/<([^>\/\s]+)([^>]*)>/g, ' $1 $2 ')
+      // Remove closing tags: </tag> → (empty)
+      .replace(/<\/[^>]+>/g, ' ')
+      // Extract from self-closing tags: <tag attr="val"/> → tag attr="val"
+      .replace(/<([^>\/\s]+)([^>]*)\s*\/>/g, ' $1 $2 ')
+      // Clean up attribute formatting: attr="value" → attr=value
+      .replace(/="([^"]*)"/g, '=$1')
+      .replace(/='([^']*)'/g, '=$1')
+      // Remove remaining special characters but preserve $, {, }, [, ] for expressions and paths
+      .replace(/[^\w\s=\$\{\}\[\]\/\-\.,:@]/g, ' ')
+      // Normalize whitespace
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    // Split into meaningful tokens
+    const contentTokens = cleanedContent
+      .split(/\s+/)
+      .filter(t => t.length > 1 && t.length < 100); // Allow longer tokens for expressions like ${payload.userId}
 
     tokens.push(...contentTokens);
 
-
-    return tokens.slice(0, 150).join(' ');
+    // Increased limit from 150 to 200 for better context representation
+    return tokens.slice(0, 200).join(' ');
   }
 }
