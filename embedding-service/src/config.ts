@@ -38,7 +38,7 @@ export function loadConfig(): ServiceConfig {
 
     return {
         pollIntervalMs: parseInt(process.env.EMBEDDING_POLL_INTERVAL_MS || '10000', 10),
-        maxTokens: parseInt(process.env.EMBEDDING_MAX_TOKENS || '256', 10),
+        maxTokens: parseInt(process.env.EMBEDDING_MAX_TOKENS || '512', 10),
 
         workspaceRoot,
         projectFolders,

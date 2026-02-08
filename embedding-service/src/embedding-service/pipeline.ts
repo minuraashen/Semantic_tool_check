@@ -76,10 +76,11 @@ export class Pipeline {
     // Get existing chunks for this file
     const existingChunks = this.db.getChunksByFile(filePath);
 
-    // Build map of existing chunks by content hash
-    const existingByHash = new Map<string, typeof existingChunks[0]>();
+    // Build map of existing chunks by their unique key (file_path, chunk_index, start_line, end_line)
+    const existingByLocation = new Map<string, typeof existingChunks[0]>();
     for (const chunk of existingChunks) {
-      existingByHash.set(chunk.contentHash, chunk);
+      const key = `${chunk.chunkIndex}:${chunk.startLine}:${chunk.endLine}`;
+      existingByLocation.set(key, chunk);
     }
 
     // If file hash changed, delete all old chunks to avoid conflicts
@@ -88,7 +89,7 @@ export class Pipeline {
       if (existingHash !== fileHash) {
         console.log(`  File modified, deleting ${existingChunks.length} old chunks`);
         this.db.deleteChunksByFile(filePath);
-        existingByHash.clear();
+        existingByLocation.clear();
       }
     }
 
@@ -122,22 +123,33 @@ export class Pipeline {
         referencedSequences: chunk.referencedSequences,
       };
 
-      // Check if we have an existing chunk with same content hash
-      const existingChunk = existingByHash.get(chunk.contentHash);
+      // Check if we have an existing chunk at this location
+      const locationKey = `${chunk.chunkIndex}:${chunk.startLine}:${chunk.endLine}`;
+      const existingChunk = existingByLocation.get(locationKey);
 
       let embedding: Float32Array;
-      if (existingChunk) {
-        // Reuse existing embedding (content hasn't changed)
+      let dbId: number;
+
+      if (existingChunk && existingChunk.contentHash === chunk.contentHash) {
+        // Existing chunk with same content - reuse embedding and update metadata
         embedding = new Float32Array(existingChunk.embedding.buffer);
+        this.db.updateChunk(existingChunk.id, metadata, embedding);
+        dbId = existingChunk.id;
         reusedCount++;
-      } else {
-        // Generate new embedding
+      } else if (existingChunk) {
+        // Existing chunk but content changed - generate new embedding and update
         embedding = await this.embedder.embed(chunk.embeddingText);
+        this.db.updateChunk(existingChunk.id, metadata, embedding);
+        dbId = existingChunk.id;
+        embeddedCount++;
+      } else {
+        // New chunk - generate embedding and insert
+        embedding = await this.embedder.embed(chunk.embeddingText);
+        dbId = this.db.insertChunk(metadata, embedding);
         embeddedCount++;
       }
 
-      const newId = this.db.insertChunk(metadata, embedding);
-      chunkIndexToDbId.set(chunk.chunkIndex, newId);
+      chunkIndexToDbId.set(chunk.chunkIndex, dbId);
 
       // Link all artifact references
       if (chunk.referencedSequences && chunk.referencedSequences.length > 0) {
@@ -147,7 +159,7 @@ export class Pipeline {
             const artifactName = artifactRef.includes(':')
               ? artifactRef.split(':', 2)[1]
               : artifactRef;
-            this.db.linkSequenceReference(newId, artifactDef.id, artifactName);
+            this.db.linkSequenceReference(dbId, artifactDef.id, artifactName);
           }
         }
       }

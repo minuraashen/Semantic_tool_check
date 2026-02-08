@@ -45,7 +45,7 @@ export class CodeRetrieval {
   /**
    * Basic semantic search (cosine similarity)
    */
-  async search(query: string, topK: number = 5): Promise<RetrievalResult[]> {
+  async search(query: string, topK: number = 60): Promise<RetrievalResult[]> {
     const queryEmbedding = await this.embedder.embed(query);
     const results = this.db.cosineSimilarity(queryEmbedding);
 
@@ -72,14 +72,14 @@ export class CodeRetrieval {
    * Enhanced search with relationship traversal
    * Expands results to include all referenced artifacts (sequences, local-entries, endpoints, templates)
    */
-  async searchWithContext(query: string, topK: number = 5): Promise<RetrievalResult[]> {
+  async searchWithContext(query: string, topK: number = 60): Promise<RetrievalResult[]> {
     const results = await this.search(query, topK);
 
     // Expand each result with referenced artifacts
     for (const result of results) {
       if (result.referencedSequences && result.referencedSequences.length > 0) {
         result.relatedSequences = [];
-        
+
         for (const artifactRef of result.referencedSequences) {
           const artifactDef = this.db.getSequenceDefinition(artifactRef);
           if (artifactDef) {
@@ -113,9 +113,9 @@ export class CodeRetrieval {
   async searchByType(
     query: string,
     semanticType: string,
-    topK: number = 5
+    topK: number = 60
   ): Promise<RetrievalResult[]> {
-    const allResults = await this.search(query, 50);
+    const allResults = await this.search(query, 60);
     const filtered = allResults.filter(r => r.semanticType === semanticType);
     return filtered.slice(0, topK);
   }
@@ -126,9 +126,9 @@ export class CodeRetrieval {
   async searchByIntent(
     query: string,
     semanticIntent: string,
-    topK: number = 5
+    topK: number = 60
   ): Promise<RetrievalResult[]> {
-    const allResults = await this.search(query, 50);
+    const allResults = await this.search(query, 60);
     const filtered = allResults.filter(r => r.semanticIntent === semanticIntent);
     return filtered.slice(0, topK);
   }
@@ -192,15 +192,15 @@ async function main() {
   await retrieval.initialize();
 
   let results: RetrievalResult[];
-  
+
   if (withContext) {
-    results = await retrieval.searchWithContext(query, 10);
+    results = await retrieval.searchWithContext(query, 60);
   } else if (semanticType) {
-    results = await retrieval.searchByType(query, semanticType, 10);
+    results = await retrieval.searchByType(query, semanticType, 60);
   } else if (semanticIntent) {
-    results = await retrieval.searchByIntent(query, semanticIntent, 10);
+    results = await retrieval.searchByIntent(query, semanticIntent, 60);
   } else {
-    results = await retrieval.search(query, 10);
+    results = await retrieval.search(query, 60);
   }
 
   if (results.length === 0) {
@@ -213,11 +213,11 @@ async function main() {
       console.log(`   File: ${result.filePath}`);
       console.log(`   Lines: ${result.startLine}-${result.endLine}`);
       console.log(`   Context: ${JSON.stringify(result.context)}`);
-      
+
       if (result.referencedSequences && result.referencedSequences.length > 0) {
         console.log(`   📎 References: ${result.referencedSequences.join(', ')}`);
       }
-      
+
       if (result.relatedSequences && result.relatedSequences.length > 0) {
         console.log(`   🔗 Related Artifacts:`);
         result.relatedSequences.forEach(artifact => {
@@ -226,7 +226,7 @@ async function main() {
           console.log(`      - [${artifactType}] ${artifactLabel} (${artifact.filePath}:${artifact.startLine}-${artifact.endLine})`);
         });
       }
-      
+
       console.log();
     });
   }

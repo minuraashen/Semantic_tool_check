@@ -506,7 +506,7 @@ export class XMLChunker {
    * Count tokens using the model's tokenizer
    */
   private countTokens(content: string, metadata: string = ''): number {
-    const fullText = content + ' ' + metadata;
+    const fullText =  metadata + ' ' + content;
 
     if (this.embedder && this.embedder.countTokens) {
       return this.embedder.countTokens(fullText);
@@ -640,12 +640,13 @@ export class XMLChunker {
     }
 
     const contentTokens = content
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/[^\w\s]/g, ' ')
-      .split(/\s+/)
-      .filter(t => t.length > 2 && t.length < 50);
+      // .replace(/<[^>]+>/g, ' ')
+      // .replace(/[^\w\s]/g, ' ')
+      // .split(/\s+/)
+      // .filter(t => t.length > 2 && t.length < 50);
 
     tokens.push(...contentTokens);
+
 
     return tokens.slice(0, 150).join(' ');
   }
