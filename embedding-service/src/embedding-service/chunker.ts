@@ -115,9 +115,6 @@ export class XMLChunker {
 
     this.processNode(parsed, xmlContent, lines, filePath, chunks, null, rootContext);
 
-    // Post-process: Extract sequence references from all chunks
-    this.extractSequenceReferences(chunks, xmlContent);
-
     return chunks;
   }
 
@@ -252,45 +249,7 @@ export class XMLChunker {
     return 'unknown';
   }
 
-  /**
-   * Extract cross-artifact references from XML content
-   */
-  private extractSequenceReferences(chunks: XMLChunk[], xmlContent: string): void {
-    const allReferences = new Set<string>();
 
-    // Pattern 1: <sequence key="SequenceName"/>
-    const sequenceRefPattern = /<sequence\s+key=["']([^"']+)["']\s*\/>/g;
-    let match;
-    while ((match = sequenceRefPattern.exec(xmlContent)) !== null) {
-      allReferences.add(`sequence:${match[1]}`);
-    }
-
-    // Pattern 2: configKey="LocalEntryName"
-    const configKeyPattern = /configKey=["']([^"']+)["']/g;
-    while ((match = configKeyPattern.exec(xmlContent)) !== null) {
-      allReferences.add(`localEntry:${match[1]}`);
-    }
-
-    // Pattern 3: <endpoint key="EndpointName"/>
-    const endpointRefPattern = /<endpoint\s+key=["']([^"']+)["']\s*\/>/g;
-    while ((match = endpointRefPattern.exec(xmlContent)) !== null) {
-      allReferences.add(`endpoint:${match[1]}`);
-    }
-
-    // Pattern 4: <call-template target="TemplateName"/>
-    const templateRefPattern = /<call-template\s+target=["']([^"']+)["']/g;
-    while ((match = templateRefPattern.exec(xmlContent)) !== null) {
-      allReferences.add(`template:${match[1]}`);
-    }
-
-    // Attach references to all chunks in this file
-    if (allReferences.size > 0) {
-      const referencesArray = Array.from(allReferences);
-      for (const chunk of chunks) {
-        chunk.referencedSequences = referencesArray;
-      }
-    }
-  }
 
   /**
    * Extract references from a single chunk's content
@@ -463,7 +422,7 @@ export class XMLChunker {
       context,
       sequenceKey,
       isSequenceDefinition: isStandalone,
-      referencedSequences: [],
+      referencedSequences: chunkReferences,
     });
   }
 

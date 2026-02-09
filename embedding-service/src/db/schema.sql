@@ -11,8 +11,8 @@ CREATE TABLE IF NOT EXISTS chunks (
   chunk_index INTEGER NOT NULL,
   start_line INTEGER NOT NULL,
   end_line INTEGER NOT NULL,
-  parent_chunk_id INTEGER,
   embedding BLOB NOT NULL,
+  parent_chunk_id INTEGER,            -- Reference to parent chunk
   timestamp INTEGER NOT NULL,
   -- Merkle tree and semantic metadata
   content_hash TEXT NOT NULL,         -- SHA-256 hash of content + metadata (for change detection)
@@ -28,7 +28,6 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS idx_file_path ON chunks(file_path);
 CREATE INDEX IF NOT EXISTS idx_file_hash ON chunks(file_hash);
 CREATE INDEX IF NOT EXISTS idx_resource_type ON chunks(resource_type);
-CREATE INDEX IF NOT EXISTS idx_parent_chunk ON chunks(parent_chunk_id);
 CREATE INDEX IF NOT EXISTS idx_content_hash ON chunks(content_hash);
 CREATE INDEX IF NOT EXISTS idx_semantic_type ON chunks(semantic_type);
 CREATE INDEX IF NOT EXISTS idx_sequence_key ON chunks(sequence_key);
