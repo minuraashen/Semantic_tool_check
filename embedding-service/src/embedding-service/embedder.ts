@@ -18,7 +18,7 @@ export class Embedder {
       'feature-extraction',
       'isuruwijesiri/all-MiniLM-L6-v2-code-search-512',
       {
-        quantized: true // Use model_quantized.onnx
+        quantized: false // Use model_quantized.onnx
       }
     );
 

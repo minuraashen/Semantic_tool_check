@@ -600,8 +600,12 @@ export class XMLChunker {
     attrs: Record<string, string>,
     context: SemanticContext
   ): string {
-    // Start with JSON context for structured representation
-    const contextStr = JSON.stringify(context);
+
+  //  // Start with JSON context for structured representation
+  //   const contextStr = JSON.stringify(context);
+
+    // Start with formatted context metadata as text
+    const contextStr = this.formatMetadata(context);
     const tokens: string[] = contextStr ? [contextStr] : [];
 
     // Comprehensive XML preprocessing: Remove all angle brackets and create natural text
