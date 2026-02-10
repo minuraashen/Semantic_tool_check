@@ -385,7 +385,7 @@ export class XMLChunker {
       attrs.context || attrs['@_context'] || tagName;
     const chunkIndex = this.chunkCounter++;
 
-    const embeddingText = this.createEmbeddingText(tagName, resourceName, content, attrs);
+    const embeddingText = this.createEmbeddingText(tagName, resourceName, content, attrs, context);
     const semanticType = this.mapToSemanticType(tagName);
     const semanticIntent = this.inferIntent(tagName, attrs, content);
     const contentHash = computeChunkHash(content, {
@@ -586,26 +586,23 @@ export class XMLChunker {
 
   /**
    * Create natural text representation for embedding
-   * Removes all XML angle brackets and symbols for cleaner, more semantic embeddings
+   * Format: [JSON Context] + [Cleaned XML Content]
    * 
-   * Example transformation:
-   *   <api context="/orchestrate"><resource methods="POST">
-   *   → api context=/orchestrate resource methods=POST
+   * Example:
+   *   Context: {"api":{"name":"BankAPI","context":"/bankapi"},"resource":{"method":"GET","uriTemplate":"/"}}
+   *   Content: <payloadFactory><format>{"greeting":"Hello"}</format></payloadFactory>
+   *   → {"api":{"name":"BankAPI","context":"/bankapi"},"resource":{"method":"GET"}} payloadFactory format greeting Hello
    */
   private createEmbeddingText(
     tagName: string,
     resourceName: string,
     content: string,
-    attrs: Record<string, string>
+    attrs: Record<string, string>,
+    context: SemanticContext
   ): string {
-    const tokens: string[] = [tagName, resourceName];
-
-    // Add attributes from current node
-    for (const [key, value] of Object.entries(attrs)) {
-      if (key !== 'xmlns' && !key.startsWith('xmlns:') && !key.startsWith('@_xmlns')) {
-        tokens.push(`${key}=${value}`);
-      }
-    }
+    // Start with JSON context for structured representation
+    const contextStr = JSON.stringify(context);
+    const tokens: string[] = contextStr ? [contextStr] : [];
 
     // Comprehensive XML preprocessing: Remove all angle brackets and create natural text
     const cleanedContent = content
@@ -632,6 +629,6 @@ export class XMLChunker {
     tokens.push(...contentTokens);
 
     // Increased limit from 150 to 200 for better context representation
-    return tokens.slice(0, 200).join(' ');
+    return tokens.slice().join(' ');
   }
 }

@@ -17,7 +17,7 @@ async function main() {
   await retrieval.initialize();
 
   // Basic search with top 60 results
-  const results = await retrieval.search(query, 60);
+  const results = await retrieval.search(query, 10);
 
   console.log(`Found ${results.length} results:\n`);
 
