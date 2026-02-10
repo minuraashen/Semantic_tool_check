@@ -83,15 +83,8 @@ export class Pipeline {
       existingByLocation.set(key, chunk);
     }
 
-    // If file hash changed, delete all old chunks to avoid conflicts
-    if (existingChunks.length > 0) {
-      const existingHash = existingChunks[0].fileHash;
-      if (existingHash !== fileHash) {
-        console.log(`  File modified, deleting ${existingChunks.length} old chunks`);
-        this.db.deleteChunksByFile(filePath);
-        existingByLocation.clear();
-      }
-    }
+    // Track which existing chunks were matched (for cleanup of removed chunks)
+    const matchedChunkIds = new Set<number>();
 
     const chunkIndexToDbId = new Map<number, number>();
     let reusedCount = 0;
@@ -135,12 +128,14 @@ export class Pipeline {
         embedding = new Float32Array(existingChunk.embedding.buffer);
         this.db.updateChunk(existingChunk.id, metadata, embedding);
         dbId = existingChunk.id;
+        matchedChunkIds.add(dbId);
         reusedCount++;
       } else if (existingChunk) {
         // Existing chunk but content changed - generate new embedding and update
         embedding = await this.embedder.embed(chunk.embeddingText);
         this.db.updateChunk(existingChunk.id, metadata, embedding);
         dbId = existingChunk.id;
+        matchedChunkIds.add(dbId);
         embeddedCount++;
       } else {
         // New chunk - generate embedding and insert
@@ -165,11 +160,23 @@ export class Pipeline {
       }
     }
 
+    // Delete chunks that no longer exist in the file (chunks that weren't matched)
+    let deletedCount = 0;
+    for (const existingChunk of existingChunks) {
+      if (!matchedChunkIds.has(existingChunk.id)) {
+        this.db.deleteChunk(existingChunk.id);
+        deletedCount++;
+      }
+    }
+
     if (reusedCount > 0) {
       console.log(`  ♻️  Reused ${reusedCount} embeddings (unchanged content)`);
     }
     if (embeddedCount > 0) {
       console.log(`  ✨ Generated ${embeddedCount} new embeddings`);
+    }
+    if (deletedCount > 0) {
+      console.log(`  🗑️  Deleted ${deletedCount} removed chunks`);
     }
   }
 }

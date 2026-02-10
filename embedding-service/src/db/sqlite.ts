@@ -217,11 +217,11 @@ export class SQLiteDB {
     // Parse reference format: "type:name" or just "name" (assume sequence)
     let artifactType = 'sequence';
     let artifactName = artifactRef;
-    
+
     if (artifactRef.includes(':')) {
       [artifactType, artifactName] = artifactRef.split(':', 2);
     }
-    
+
     const stmt = this.db.prepare(`
       SELECT * FROM chunks 
       WHERE sequence_key = ? AND is_sequence_definition = 1 
@@ -272,6 +272,11 @@ export class SQLiteDB {
   deleteChunksByFile(filePath: string): void {
     const stmt = this.db.prepare(`DELETE FROM chunks WHERE file_path = ?`);
     stmt.run(filePath);
+  }
+
+  deleteChunk(id: number): void {
+    const stmt = this.db.prepare(`DELETE FROM chunks WHERE id = ?`);
+    stmt.run(id);
   }
 
   getAllChunks(): ChunkRecord[] {
