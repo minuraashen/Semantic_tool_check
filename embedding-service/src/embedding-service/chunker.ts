@@ -285,6 +285,9 @@ export class XMLChunker {
       const tagName = Object.keys(item).find(key => key !== ':@') || '';
       if (!tagName) continue;
 
+      // Skip XML declaration and other processing instructions
+      if (tagName.startsWith('?xml')) continue;
+
       const element = item[tagName];
       const nodeAttrs = item[':@'] || {};
 
@@ -523,7 +526,7 @@ export class XMLChunker {
       const line = lines[i];
 
       if (startLine === -1) {
-        const openPattern = new RegExp(`<${tagName}[\\s>]`);
+        const openPattern = new RegExp(`<${tagName}[\\s>/]`);
         if (openPattern.test(line)) {
           startLine = i + 1;
           this.lastSearchPosition = i + 1;
