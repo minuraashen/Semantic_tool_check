@@ -34,7 +34,7 @@ export function loadConfig(): ServiceConfig {
     const projectFoldersEnv = process.env.EMBEDDING_PROJECT_FOLDERS;
     const projectFolders = projectFoldersEnv
         ? projectFoldersEnv.split(',').map(f => f.trim())
-        : ['BankIntegration', 'Hotelintegration'];
+        : ['BankIntegration', 'Hotelintegration', 'life-delivery-papi'];
 
     return {
         pollIntervalMs: parseInt(process.env.EMBEDDING_POLL_INTERVAL_MS || '10000', 10),
