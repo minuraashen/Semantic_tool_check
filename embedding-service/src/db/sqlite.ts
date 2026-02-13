@@ -110,7 +110,31 @@ export class SQLiteDB {
     this.db.exec(schema);
   }
 
-  insertChunk(metadata: ChunkMetadata, embedding: Float32Array): number {
+  // ── FTS5 helpers (keep in sync with chunks table) ──────────────────
+
+  private insertFts(chunkId: number, embeddingText: string): void {
+    const stmt = this.db.prepare(
+      `INSERT INTO chunks_fts (chunk_id, embedding_text) VALUES (?, ?)`
+    );
+    stmt.run(chunkId, embeddingText);
+  }
+
+  private updateFts(chunkId: number, embeddingText: string): void {
+    // FTS5 does not support UPDATE — delete then re-insert
+    this.deleteFts(chunkId);
+    this.insertFts(chunkId, embeddingText);
+  }
+
+  private deleteFts(chunkId: number): void {
+    const stmt = this.db.prepare(
+      `DELETE FROM chunks_fts WHERE chunk_id = ?`
+    );
+    stmt.run(chunkId);
+  }
+
+  // ── Chunk CRUD ────────────────────────────────────────────────────
+
+  insertChunk(metadata: ChunkMetadata, embedding: Float32Array, embeddingText?: string): number {
     const stmt = this.db.prepare(`
       INSERT INTO chunks (
         file_path, file_hash, resource_name, resource_type, chunk_type,
@@ -141,10 +165,17 @@ export class SQLiteDB {
       metadata.referencedSequences ? JSON.stringify(metadata.referencedSequences) : null
     );
 
-    return result.lastInsertRowid as number;
+    const id = result.lastInsertRowid as number;
+
+    // Sync FTS5 index
+    if (embeddingText) {
+      this.insertFts(id, embeddingText);
+    }
+
+    return id;
   }
 
-  updateChunk(id: number, metadata: ChunkMetadata, embedding: Float32Array): void {
+  updateChunk(id: number, metadata: ChunkMetadata, embedding: Float32Array, embeddingText?: string): void {
     const stmt = this.db.prepare(`
       UPDATE chunks SET
         file_hash = ?, resource_name = ?, resource_type = ?, chunk_type = ?,
@@ -175,6 +206,11 @@ export class SQLiteDB {
       metadata.referencedSequences ? JSON.stringify(metadata.referencedSequences) : null,
       id
     );
+
+    // Sync FTS5 index
+    if (embeddingText) {
+      this.updateFts(id, embeddingText);
+    }
   }
 
   getChunksByFile(filePath: string): ChunkRecord[] {
@@ -270,11 +306,19 @@ export class SQLiteDB {
   }
 
   deleteChunksByFile(filePath: string): void {
+    // Delete FTS5 entries for all chunks in this file first
+    const idsStmt = this.db.prepare(`SELECT id FROM chunks WHERE file_path = ?`);
+    const rows = idsStmt.all(filePath) as { id: number }[];
+    for (const row of rows) {
+      this.deleteFts(row.id);
+    }
+
     const stmt = this.db.prepare(`DELETE FROM chunks WHERE file_path = ?`);
     stmt.run(filePath);
   }
 
   deleteChunk(id: number): void {
+    this.deleteFts(id);
     const stmt = this.db.prepare(`DELETE FROM chunks WHERE id = ?`);
     stmt.run(id);
   }
@@ -332,6 +376,46 @@ export class SQLiteDB {
     }
 
     return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  }
+
+  /**
+   * Expose the underlying better-sqlite3 handle for advanced queries (e.g. FTS5 BM25).
+   * Use responsibly — prefer dedicated methods for common operations.
+   */
+  getHandle(): Database.Database {
+    return this.db;
+  }
+
+  /**
+   * One-time migration: backfill the FTS5 index from an existing chunks table.
+   * Safe to call multiple times — skips chunks already indexed.
+   * Requires the pipeline to supply embeddingText; since raw embeddingText is
+   * NOT stored in the chunks table, this rebuilds it from the pipeline.
+   *
+   * For a simpler approach (re-index from stored data), pass a map of
+   * chunkId → embeddingText built during a pipeline re-scan.
+   */
+  backfillFts(entries: { chunkId: number; embeddingText: string }[]): number {
+    const existing = new Set<number>(
+      (this.db.prepare(`SELECT chunk_id FROM chunks_fts`).all() as { chunk_id: number }[])
+        .map(r => r.chunk_id)
+    );
+
+    const insert = this.db.prepare(
+      `INSERT INTO chunks_fts (chunk_id, embedding_text) VALUES (?, ?)`
+    );
+
+    let inserted = 0;
+    const runBatch = this.db.transaction(() => {
+      for (const entry of entries) {
+        if (!existing.has(entry.chunkId)) {
+          insert.run(entry.chunkId, entry.embeddingText);
+          inserted++;
+        }
+      }
+    });
+    runBatch();
+    return inserted;
   }
 
   close(): void {

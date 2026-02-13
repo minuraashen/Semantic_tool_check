@@ -7,7 +7,10 @@
     "build": "tsc",
     "start": "npm run build && node dist/embedding-service/index.js",
     "dev": "ts-node src/embedding-service/index.ts",
-    "search": "ts-node src/retrieval/search.ts"
+    "search": "ts-node src/retrieval/search.ts",
+    "search:bm25": "ts-node src/retrieval/search-bm25.ts",
+    "search:compare": "ts-node src/retrieval/search-compare.ts",
+    "bm25:backfill": "ts-node src/retrieval/backfill-fts.ts"
   },
   "keywords": [
     "embedding",

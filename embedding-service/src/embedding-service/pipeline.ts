@@ -126,21 +126,21 @@ export class Pipeline {
       if (existingChunk && existingChunk.contentHash === chunk.contentHash) {
         // Existing chunk with same content - reuse embedding and update metadata
         embedding = new Float32Array(existingChunk.embedding.buffer);
-        this.db.updateChunk(existingChunk.id, metadata, embedding);
+        this.db.updateChunk(existingChunk.id, metadata, embedding, chunk.embeddingText);
         dbId = existingChunk.id;
         matchedChunkIds.add(dbId);
         reusedCount++;
       } else if (existingChunk) {
         // Existing chunk but content changed - generate new embedding and update
         embedding = await this.embedder.embed(chunk.embeddingText);
-        this.db.updateChunk(existingChunk.id, metadata, embedding);
+        this.db.updateChunk(existingChunk.id, metadata, embedding, chunk.embeddingText);
         dbId = existingChunk.id;
         matchedChunkIds.add(dbId);
         embeddedCount++;
       } else {
         // New chunk - generate embedding and insert
         embedding = await this.embedder.embed(chunk.embeddingText);
-        dbId = this.db.insertChunk(metadata, embedding);
+        dbId = this.db.insertChunk(metadata, embedding, chunk.embeddingText);
         embeddedCount++;
       }
 

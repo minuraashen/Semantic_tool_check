@@ -48,3 +48,11 @@ CREATE TABLE IF NOT EXISTS sequence_references (
 CREATE INDEX IF NOT EXISTS idx_caller_chunk ON sequence_references(caller_chunk_id);
 CREATE INDEX IF NOT EXISTS idx_callee_chunk ON sequence_references(callee_chunk_id);
 CREATE INDEX IF NOT EXISTS idx_sequence_key_ref ON sequence_references(sequence_key);
+
+-- BM25 full-text search index (FTS5)
+-- Mirrors embedding_text from the chunking pipeline for sparse term-based search
+-- chunk_id is UNINDEXED (used only for joining back to chunks table)
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+  chunk_id UNINDEXED,
+  embedding_text
+);
