@@ -10,7 +10,9 @@
     "search": "ts-node src/retrieval/search.ts",
     "search:bm25": "ts-node src/retrieval/search-bm25.ts",
     "search:compare": "ts-node src/retrieval/search-compare.ts",
-    "bm25:backfill": "ts-node src/retrieval/backfill-fts.ts"
+    "bm25:backfill": "ts-node src/retrieval/backfill-fts.ts",
+    "ground-truth:build": "ts-node src/retrieval/build-ground-truth.ts",
+    "test:compare": "ts-node src/retrieval/test-runner.ts"
   },
   "keywords": [
     "embedding",

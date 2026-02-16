@@ -4,3 +4,8 @@ Hotelintegration/
 life-delivery-papi/
 embedding-service/embeddings-export.json
 evaluation_queries.md
+results-automated.csv
+results-automated.json
+results.csv
+ground-truth.json
+

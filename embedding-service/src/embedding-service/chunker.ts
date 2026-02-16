@@ -32,10 +32,11 @@ export interface XMLChunk {
 
 /**
  * Semantic context with flexible artifact metadata
- * Uses Record type to support any artifact type from registry
+ * DYNAMIC APPROACH: Most context is captured automatically via [key: string]: any
+ * Only critical artifact-level contexts are explicitly defined for type safety
  */
 export interface SemanticContext {
-  // Common context types
+  // Critical artifact-level contexts (special formatting in formatMetadata)
   api?: {
     name?: string;
     context?: string;
@@ -56,17 +57,9 @@ export interface SemanticContext {
     xmlns?: string;
     [key: string]: any;
   };
-  // Data service components
-  query?: {
-    id?: string;
-    useConfig?: string;
-  };
-  operation?: {
-    name?: string;
-    callsQuery?: string;
-  };
   references?: string[];
-  // Allow dynamic extension
+  // DYNAMIC: All other contexts (filter, switch, throttle, policy, variable, log, etc.)
+  // are automatically captured and stored here without explicit type definitions
   [key: string]: any;
 }
 
@@ -355,7 +348,7 @@ export class XMLChunker {
       const element = item[tagName];
       const nodeAttrs = item[':@'] || {};
 
-      // Update context based on node type
+      // Update context for THIS node (will be passed to children)
       const updatedContext = this.updateContext(tagName, nodeAttrs, context);
 
       // Check if this is a chunkable node
@@ -367,20 +360,22 @@ export class XMLChunker {
         // Token gating: Check if subtree fits within limit
         const range = this.findElementRange(tagName, this.getNodeName(tagName, element), lines);
         const content = this.extractContent(lines, range);
-        const metadata = this.formatMetadata(updatedContext);
+        // CRITICAL: Use parent context (not updatedContext) to avoid duplication
+        // The chunk's own attributes are already in the content, so we should NOT include them in metadata
+        const metadata = this.formatMetadata(context);
         const tokenCount = this.countTokens(content, metadata);
 
         if (tokenCount <= this.maxTokens) {
-          // Subtree fits → Emit chunk and STOP traversal
-          this.createChunk(tagName, nodeAttrs, content, range, filePath, chunks, parentChunkId, updatedContext);
+          // Subtree fits → Emit chunk with parent context (not updatedContext)
+          this.createChunk(tagName, nodeAttrs, content, range, filePath, chunks, parentChunkId, context);
         } else {
-          // Subtree too large → Do NOT chunk, descend to ALL children
+          // Subtree too large → Do NOT chunk, descend to ALL children with updated context
           if (Array.isArray(element)) {
             this.processNode(element, lines, filePath, chunks, parentChunkId, updatedContext);
           }
         }
       } else if (Array.isArray(element)) {
-        // Non-chunkable nodes → just traverse
+        // Non-chunkable nodes → just traverse with updated context
         this.processNode(element, lines, filePath, chunks, parentChunkId, updatedContext);
       }
     }
@@ -388,10 +383,14 @@ export class XMLChunker {
 
   /**
    * Update semantic context as we traverse the tree
+   * DYNAMIC APPROACH: Automatically captures context from ANY semantic boundary
    */
   private updateContext(tagName: string, attrs: Record<string, string>, parentContext: SemanticContext): SemanticContext {
     const newContext = { ...parentContext };
+    const localName = tagName.split(':').pop() || tagName;
 
+    // Well-known artifact-level contexts (special formatting)
+    // These represent the hierarchical structure: artifact → resource → sequence
     if (tagName === 'api' || tagName === 'proxy') {
       newContext.api = {
         name: attrs.name || attrs['@_name'],
@@ -407,18 +406,64 @@ export class XMLChunker {
       newContext.sequence = tagName;
     } else if (tagName === 'sequence' && (attrs.key || attrs['@_key'])) {
       newContext.sequence = attrs.key || attrs['@_key'];
-    } else if (tagName === 'query') {
-      newContext.query = {
-        id: attrs.id || attrs['@_id'],
-        useConfig: attrs.useConfig || attrs['@_useConfig'],
-      };
-    } else if (tagName === 'operation') {
-      newContext.operation = {
-        name: attrs.name || attrs['@_name'],
-      };
+    } else {
+      // DYNAMIC CONTEXT: For ALL other elements (including query, operation, filter, etc.)
+      // extract identifying attributes automatically
+      const identifyingAttrs = this.extractIdentifyingAttributes(attrs);
+
+      // Only add to context if there are identifying attributes
+      if (Object.keys(identifyingAttrs).length > 0) {
+        // Use localName as the context key (e.g., "filter", "query", "operation", "Policy")
+        newContext[localName] = identifyingAttrs;
+      }
     }
 
     return newContext;
+  }
+
+  /**
+   * Extract identifying attributes from any element
+   * These are attributes that help identify or describe what the element does
+   */
+  private extractIdentifyingAttributes(attrs: Record<string, string>): Record<string, any> {
+    const identifyingAttrs: Record<string, any> = {};
+
+    // Common identifying attribute patterns
+    const identifyingKeys = [
+      'name', '@_name',
+      'id', '@_id',
+      'key', '@_key',
+      'xpath', '@_xpath',
+      'source', '@_source',
+      'regex', '@_regex',
+      'type', '@_type',
+      'expression', '@_expression',
+      'value', '@_value',
+      'media-type', '@_media-type',
+      'category', '@_category',
+      'level', '@_level',
+      'target', '@_target',
+      'uri', '@_uri',
+      'method', '@_method',
+    ];
+
+    // Extract all identifying attributes that are present
+    for (const key of identifyingKeys) {
+      if (attrs[key]) {
+        // Remove the '@_' prefix for cleaner context keys
+        const cleanKey = key.startsWith('@_') ? key.substring(2) : key;
+        identifyingAttrs[cleanKey] = attrs[key];
+      }
+    }
+
+    // Also capture namespaced attributes (e.g., throttle:type)
+    for (const [key, value] of Object.entries(attrs)) {
+      if (key.includes(':') && !key.startsWith(':@')) {
+        identifyingAttrs[key] = value;
+      }
+    }
+
+    return identifyingAttrs;
   }
 
   /**
@@ -548,9 +593,12 @@ export class XMLChunker {
 
   /**
    * Format context metadata into text for token counting
+   * DYNAMIC APPROACH: Automatically formats any context field
    */
   private formatMetadata(context: SemanticContext): string {
     const parts: string[] = [];
+
+    // Well-known context fields (formatted specially for readability)
     if (context.api?.name) parts.push(`API: ${context.api.name}`);
     if (context.api?.context) parts.push(`Context: ${context.api.context}`);
     if (context.resource?.method) parts.push(`Method: ${context.resource.method}`);
@@ -560,12 +608,45 @@ export class XMLChunker {
       parts.push(`Sequence: ${seqName}`);
     }
     if (context.artifact?.name) parts.push(`${context.artifact.type}: ${context.artifact.name}`);
-    if (context.query?.id) parts.push(`Query: ${context.query.id}`);
-    if (context.operation?.name) parts.push(`Operation: ${context.operation.name}`);
+
+    // DYNAMIC CONTEXT: Format ANY other context fields automatically
+    // This handles query, operation, filter, switch, throttle, policy, and ALL future elements
+    const knownKeys = new Set(['api', 'resource', 'sequence', 'artifact', 'references']);
+
+    for (const [key, value] of Object.entries(context)) {
+      if (knownKeys.has(key) || !value || typeof value !== 'object') {
+        continue;
+      }
+
+      // Format this context field
+      const formattedKey = this.formatContextKey(key);
+
+      // If the value is an object with identifying attributes, format them
+      if (typeof value === 'object' && !Array.isArray(value)) {
+        const attrPairs = Object.entries(value)
+          .filter(([k, v]) => v !== undefined && v !== null && v !== '')
+          .map(([k, v]) => `${k}=${v}`)
+          .join(' ');
+
+        if (attrPairs) {
+          parts.push(`${formattedKey}: ${attrPairs}`);
+        }
+      }
+    }
+
+    // References (if any)
     if (context.references && context.references.length > 0) {
       parts.push(`Uses: ${context.references.join(', ')}`);
     }
+
     return parts.join(' ');
+  }
+
+  /**
+   * Format context key for display (e.g., "filter" -> "Filter", "Policy" -> "Policy")
+   */
+  private formatContextKey(key: string): string {
+    return key.charAt(0).toUpperCase() + key.slice(1);
   }
 
   private extractAttributes(element: any): Record<string, string> {
@@ -585,6 +666,10 @@ export class XMLChunker {
     return attrs;
   }
 
+  /**
+   * Find the line range for an XML element
+   * Automatically includes structural wrapper elements (onAccept, onReject, then, else, etc.)
+   */
   private findElementRange(tagName: string, resourceName: string, lines: string[]): LineRange {
     let startLine = -1;
     let endLine = -1;
@@ -625,7 +710,72 @@ export class XMLChunker {
     if (startLine === -1) startLine = 1;
     if (endLine === -1) endLine = startLine;
 
-    return { start: startLine, end: endLine };
+    // GENERALIZABLE WRAPPER DETECTION:
+    // Expand range to include structural wrapper elements (onAccept, onReject, then, else, etc.)
+    // These are parent elements that have minimal/no attributes and provide structural context
+    const expandedRange = this.expandRangeForStructuralWrappers(startLine, endLine, lines);
+
+    return expandedRange;
+  }
+
+  /**
+   * Expand a range to include structural wrapper elements
+   * Detects wrappers generically without hardcoding tag names
+   */
+  private expandRangeForStructuralWrappers(startLine: number, endLine: number, lines: string[]): LineRange {
+    let newStart = startLine;
+    let newEnd = endLine;
+
+    // Look backwards for structural wrapper opening tags
+    // A structural wrapper is typically:
+    // - A simple opening tag with no or minimal attributes
+    // - Located immediately before our element (with possible whitespace)
+    if (startLine > 1) {
+      for (let i = startLine - 2; i >= 0 && i >= startLine - 5; i--) {
+        const line = lines[i].trim();
+
+        // Check if this line is a simple opening tag (e.g., <onAccept>, <then>, <else>)
+        // Pattern: <tagname> or <tagname >, but NOT tags with attributes like <tag attr="value">
+        const simpleOpeningTag = /^<(\w+:?\w*)>\s*$/;
+        const match = line.match(simpleOpeningTag);
+
+        if (match) {
+          // Found a structural wrapper, expand to include it
+          newStart = i + 1;
+          // Continue looking for more nested wrappers
+        } else if (line && !line.startsWith('<!--') && line !== '') {
+          // Hit a non-wrapper line, stop searching
+          break;
+        }
+      }
+    }
+
+    // Look forwards for corresponding closing tags
+    // Match each wrapper we found when expanding backwards
+    if (newStart < startLine && endLine < lines.length) {
+      const wrappersToClose = startLine - newStart;
+      let closedWrappers = 0;
+
+      for (let i = endLine; i < lines.length && i < endLine + 10; i++) {
+        const line = lines[i].trim();
+
+        // Check if this is a simple closing tag
+        const simpleClosingTag = /^<\/(\w+:?\w*)>\s*$/;
+        if (simpleClosingTag.test(line)) {
+          closedWrappers++;
+          newEnd = i + 1;
+
+          if (closedWrappers >= wrappersToClose) {
+            break;
+          }
+        } else if (line && !line.startsWith('<!--') && line !== '') {
+          // Hit a non-wrapper line before closing all wrappers
+          break;
+        }
+      }
+    }
+
+    return { start: newStart, end: newEnd };
   }
 
   private extractContent(lines: string[], range: LineRange): string {
