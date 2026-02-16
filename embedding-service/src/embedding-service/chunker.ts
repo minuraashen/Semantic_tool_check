@@ -97,7 +97,7 @@ export class XMLChunker {
     const parser = new XMLParser({
       ignoreAttributes: false,
       attributeNamePrefix: '',
-      removeNSPrefix: true,
+      removeNSPrefix: false, // Must preserve namespace for accurate heuristics (e.g., wsp:Policy)
       preserveOrder: true,
       alwaysCreateTextNode: false,
     });
@@ -188,31 +188,95 @@ export class XMLChunker {
    * Queries the artifact registry instead of hardcoded lists.
    * Falls back to heuristics for unknown tags.
    */
-  private isSemanticBoundary(tagName: string, attrs: Record<string, string> = {}): boolean {
-    // Query registry for known boundaries
-    if (this.registry.isSemanticBoundary(tagName)) {
+  private isSemanticBoundary(tagName: string, attrs: Record<string, string> = {}, element?: any): boolean {
+    const localName = tagName.split(':').pop() || tagName;
+
+    // 1. Registry Lookup (Explicit)
+    // Check both full name (wsp:Policy) and local name (Policy)
+    if (this.registry.isSemanticBoundary(tagName) || this.registry.isSemanticBoundary(localName)) {
       return true;
     }
 
-    // Heuristic fallback for unknown tags:
-    // Tags with identifying attributes suggest semantic units
+    // 2. Dot Notation Rule (Mediators & Connectors)
+    // e.g., http.post, google.spreadsheet, ENTC.agent
+    // The dot is part of the tag name, NOT a namespace separator in this context
+    if (tagName.includes('.')) {
+      return true;
+    }
+
+    // 3. Namespace Pattern Rule (WS-* & Extensions)
+    // Matches: lowercase_prefix:CamelCaseLocalName
+    // e.g., wsp:Policy, throttle:ThrottleAssertion
+    if (tagName.includes(':')) {
+      const [prefix, localNamePart] = tagName.split(':', 2);
+      // Heuristic: Prefix is lowercase alpha, LocalName starts with Uppercase
+      const isNamespacePattern = /^[a-z]+$/.test(prefix) && /^[A-Z]/.test(localNamePart);
+      if (isNamespacePattern) {
+        return true;
+      }
+    }
+
+    // 4. CamelCase Config Rule (Declarative Configuration)
+    // e.g., Filter, ThrottleAssertion, MaximumConcurrentAccess
+    // Legacy support for tags that behave like classes/objects
+    // Exclude simple lowercase tags unless they match specific keywords
+    if (/^[A-Z]/.test(localName) && !localName.includes('.')) {
+      return true;
+    }
+
+    // 5. Standard Data Service / Flow Keywords
+    const standardKeywords = ['query', 'operation', 'resource', 'config', 'validate', 'header'];
+    if (standardKeywords.includes(localName)) {
+      return true;
+    }
+
+    // 6. Universal Fallback (The Safety Net)
+    // Rule A: Has identifying attributes (name, key, id, etc.)
     const attrCount = Object.keys(attrs).filter(k => !k.startsWith('#')).length;
-    return attrCount > 0;
+    if (attrCount > 0) {
+      return true;
+    }
+
+    // Rule B: Structural Complexity (Has multiple distinct children)
+    // If it contains logic/structure, it's likely a container we want to chunk
+    if (element && this.hasComplexStructure(element)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if element has complex nested structure (multiple distinct child tags)
+   */
+  private hasComplexStructure(element: any): boolean {
+    if (!element || typeof element !== 'object') return false;
+
+    // Count distinct child tags (exclude attributes, text, processing instructions)
+    const childTags = Object.keys(element).filter(key =>
+      !key.startsWith(':@') &&
+      !key.startsWith('#') &&
+      !key.startsWith('?')
+    );
+
+    return childTags.length >= 2;
   }
 
   /**
    * Check if tag is a resource type (uses registry)
    */
   private isResourceType(tagName: string): boolean {
-    return this.registry.isResourceType(tagName);
+    const localName = tagName.split(':').pop() || tagName;
+    return this.registry.isResourceType(tagName) || this.registry.isResourceType(localName);
   }
 
   /**
    * Check if tag is a mediator type (uses registry)
    */
   private isMediatorType(tagName: string): boolean {
+    const localName = tagName.split(':').pop() || tagName;
     // Query registry
-    if (this.registry.isMediatorTag(tagName)) {
+    if (this.registry.isMediatorTag(tagName) || this.registry.isMediatorTag(localName)) {
       return true;
     }
     // Heuristic: http.* patterns are mediators
@@ -296,7 +360,7 @@ export class XMLChunker {
 
       // Check if this is a chunkable node
       const isChunkable = this.isResourceType(tagName) ||
-        this.isSemanticBoundary(tagName, nodeAttrs) ||
+        this.isSemanticBoundary(tagName, nodeAttrs, element) ||
         this.isMediatorType(tagName);
 
       if (isChunkable) {
@@ -424,17 +488,19 @@ export class XMLChunker {
    * Map XML tag to semantic type (extensible via patterns)
    */
   private mapToSemanticType(tagName: string): string {
-    if (tagName === 'resource') return 'resource';
-    if (tagName === 'api' || tagName === 'proxy') return 'api';
-    if (tagName.includes('Sequence') || tagName === 'sequence') return 'sequence';
-    if (tagName === 'filter' || tagName === 'switch') return 'filter';
-    if (tagName === 'payloadFactory') return 'payloadFactory';
-    if (tagName === 'respond') return 'response';
-    if (tagName === 'config') return 'dataConfig';
-    if (tagName === 'query') return 'dataQuery';
-    if (tagName === 'operation') return 'dataOperation';
-    if (tagName === 'trigger') return 'trigger';
-    if (tagName === 'property') return 'property';
+    const localName = tagName.split(':').pop() || tagName;
+
+    if (localName === 'resource') return 'resource';
+    if (localName === 'api' || localName === 'proxy') return 'api';
+    if (localName.includes('Sequence') || localName === 'sequence') return 'sequence';
+    if (localName === 'filter' || localName === 'switch') return 'filter';
+    if (localName === 'payloadFactory') return 'payloadFactory';
+    if (localName === 'respond') return 'response';
+    if (localName === 'config') return 'dataConfig';
+    if (localName === 'query') return 'dataQuery';
+    if (localName === 'operation') return 'dataOperation';
+    if (localName === 'trigger') return 'trigger';
+    if (localName === 'property') return 'property';
 
     // Generic fallback
     return 'component';
@@ -444,13 +510,15 @@ export class XMLChunker {
    * Infer semantic intent from tag and content
    */
   private inferIntent(tagName: string, attrs: Record<string, string>, content: string): string {
-    if (tagName === 'filter' || tagName === 'switch') return 'validation';
-    if (tagName === 'payloadFactory' || tagName === 'enrich') return 'transformation';
-    if (tagName === 'call' || tagName === 'send' || tagName.startsWith('http.')) return 'delegation';
-    if (tagName === 'respond') return 'response';
-    if (tagName === 'faultSequence') return 'error-handling';
-    if (tagName === 'query' || tagName === 'operation') return 'data-access';
-    if (tagName === 'config' || tagName === 'property' || tagName === 'trigger') return 'configuration';
+    const localName = tagName.split(':').pop() || tagName;
+
+    if (localName === 'filter' || localName === 'switch') return 'validation';
+    if (localName === 'payloadFactory' || localName === 'enrich') return 'transformation';
+    if (localName === 'call' || localName === 'send' || localName.startsWith('http.')) return 'delegation';
+    if (localName === 'respond') return 'response';
+    if (localName === 'faultSequence') return 'error-handling';
+    if (localName === 'query' || localName === 'operation') return 'data-access';
+    if (localName === 'config' || localName === 'property' || localName === 'trigger') return 'configuration';
 
     return 'processing';
   }
