@@ -397,9 +397,10 @@ export class XMLChunker {
       if (Object.keys(allAttrs).length > 0) {
         // Has attributes → store as object (e.g., resource: { methods: 'POST', 'uri-template': '/deposit' })
         newContext[localName] = allAttrs;
-      } else if (this.isSemanticBoundary(tagName, attrs)) {
-        // No attributes but is a structural/semantic boundary (e.g., <inSequence>, <outSequence>)
-        // → store tag name as string context so it appears in embeddings  
+      } else {
+        // No attributes (e.g., <then>, <else>, <onAccept>, <inSequence>)
+        // Always add as string context — every element in the traversal path is meaningful.
+        // updateContext is only called for element nodes, never for text/leaf content.
         newContext[localName] = localName;
       }
     }
