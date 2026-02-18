@@ -31,35 +31,28 @@ export interface XMLChunk {
 }
 
 /**
- * Semantic context with flexible artifact metadata
- * DYNAMIC APPROACH: Most context is captured automatically via [key: string]: any
- * Only critical artifact-level contexts are explicitly defined for type safety
+ * Semantic context — fully generic, schema-agnostic.
+ * 
+ * DESIGN: Only two explicit fields exist:
+ *   - `artifact`: Root-level artifact metadata (detected via registry or heuristics)
+ *   - `references`: Cross-artifact references extracted from content
+ * 
+ * All other context (resource boundaries, sequence names, filters, etc.) is stored
+ * dynamically via the `[key: string]: any` index signature. This means the chunker
+ * works identically for `<api>/<resource>/<inSequence>` and `<aaappp>/<reesss>/<insq>`.
  */
 export interface SemanticContext {
-  // Critical artifact-level contexts (special formatting in formatMetadata)
-  api?: {
-    name?: string;
-    context?: string;
-    xmlns?: string;
-  };
-  resource?: {
-    method?: string;
-    uriTemplate?: string;
-  };
-  sequence?: string | {
-    name?: string;
-    xmlns?: string;
-  };
-  // Generic artifact context (for any plugin-provided artifacts)
+  // Root-level artifact metadata (always present)
   artifact?: {
     type: string;
     name: string;
     xmlns?: string;
     [key: string]: any;
   };
+  // Cross-artifact references extracted from chunk content
   references?: string[];
-  // DYNAMIC: All other contexts (filter, switch, throttle, policy, variable, log, etc.)
-  // are automatically captured and stored here without explicit type definitions
+  // DYNAMIC: All element-level contexts are stored here automatically
+  // Examples: { resource: { method: 'GET', uriTemplate: '/' }, filter: { source: '...' } }
   [key: string]: any;
 }
 
@@ -119,39 +112,14 @@ export class XMLChunker {
     if (detected) {
       const { metadata } = detected;
 
-      // Map to appropriate context structure based on type
-      switch (metadata.type) {
-        case 'api':
-          context.api = {
-            name: metadata.name,
-            context: metadata.additionalInfo?.context,
-            xmlns: metadata.xmlns,
-          };
-          break;
-        case 'proxyService':
-          context.artifact = {
-            type: 'proxyService',
-            name: metadata.name,
-            transports: metadata.additionalInfo?.transports,
-            xmlns: metadata.xmlns,
-          };
-          break;
-        case 'sequence':
-          context.sequence = {
-            name: metadata.name,
-            xmlns: metadata.xmlns,
-          };
-          break;
-        default:
-          // Generic artifact context for all other types
-          context.artifact = {
-            type: metadata.type,
-            name: metadata.name,
-            xmlns: metadata.xmlns,
-            ...metadata.additionalInfo,
-          };
-          break;
-      }
+      // UNIFORM: All artifact types stored in context.artifact
+      // No special-casing for api/proxy/sequence — fully generic
+      context.artifact = {
+        type: metadata.type,
+        name: metadata.name,
+        xmlns: metadata.xmlns,
+        ...metadata.additionalInfo,
+      };
     } else {
       // Fallback: detect any artifact (including custom/unregistered types)
       // Pass filePath to infer type from folder structure
@@ -327,6 +295,9 @@ export class XMLChunker {
 
   /**
    * EXCLUSIVE TOP-DOWN CHUNKING with token gating
+   * 
+   * Fully structure-based: chunkability is determined by registry + heuristics,
+   * never by hardcoded tag names. Includes oversized leaf fallback.
    */
   private processNode(
     node: any,
@@ -369,9 +340,22 @@ export class XMLChunker {
           // Subtree fits → Emit chunk with parent context (not updatedContext)
           this.createChunk(tagName, nodeAttrs, content, range, filePath, chunks, parentChunkId, context);
         } else {
-          // Subtree too large → Do NOT chunk, descend to ALL children with updated context
+          // Subtree too large → Descend to children with updated context
           if (Array.isArray(element)) {
+            const childChunksBefore = chunks.length;
             this.processNode(element, lines, filePath, chunks, parentChunkId, updatedContext);
+
+            // OVERSIZED LEAF FALLBACK: If no children produced any chunks,
+            // this is a leaf-like node that exceeds maxTokens.
+            // Force-emit it as a chunk rather than silently dropping content.
+            if (chunks.length === childChunksBefore) {
+              this.createChunk(tagName, nodeAttrs, content, range, filePath, chunks, parentChunkId, context);
+            }
+          } else {
+            // Atomic node with no children that exceeds maxTokens → force-emit
+            const range = this.findElementRange(tagName, this.getNodeName(tagName, element), lines);
+            const content = this.extractContent(lines, range);
+            this.createChunk(tagName, nodeAttrs, content, range, filePath, chunks, parentChunkId, context);
           }
         }
       } else if (Array.isArray(element)) {
@@ -383,61 +367,40 @@ export class XMLChunker {
 
   /**
    * Update semantic context as we traverse the tree
-   * DYNAMIC APPROACH: Automatically captures context from ANY semantic boundary
+   * FULLY GENERIC: No hardcoded tag names. Uses registry for artifact roots,
+   * attribute-based heuristics for all other elements.
    */
   private updateContext(tagName: string, attrs: Record<string, string>, parentContext: SemanticContext): SemanticContext {
     const newContext = { ...parentContext };
     const localName = tagName.split(':').pop() || tagName;
 
-    // Well-known artifact-level contexts (special formatting)
-    // These represent the hierarchical structure: artifact → resource → sequence
-    if (tagName === 'api' || tagName === 'proxy') {
-      newContext.api = {
-        name: attrs.name || attrs['@_name'],
-        context: attrs.context || attrs['@_context'],
-        xmlns: attrs.xmlns || attrs['@_xmlns'],
-      };
-    } else if (tagName === 'resource') {
-      newContext.resource = {
-        method: attrs.methods || attrs['@_methods'],
-        uriTemplate: attrs['uri-template'] || attrs['@_uri-template'] || attrs.uri || attrs['@_uri'],
-      };
-    } else if (tagName === 'inSequence' || tagName === 'outSequence' || tagName === 'faultSequence') {
-      newContext.sequence = tagName;
-    } else if (tagName === 'sequence' && (attrs.key || attrs['@_key'])) {
-      newContext.sequence = attrs.key || attrs['@_key'];
-    } else if (this.isArtifactConfigElement(localName)) {
-      // ARTIFACT-LEVEL CONFIGURATION ELEMENTS:
-      // For inboundEndpoint, endpoint, messageStore, messageProcessor, etc.
-      // Capture ALL attributes since they're all configuration-critical
-      const allAttrs: Record<string, any> = {};
-
-      // Extract all non-internal attributes (skip :@, @_, etc.)
-      for (const [key, value] of Object.entries(attrs)) {
-        if (!key.startsWith(':@') && !key.startsWith('@_')) {
-          allAttrs[key] = value;
-        } else if (key.startsWith('@_')) {
-          // Convert @_name to name, @_class to class, etc.
-          const cleanKey = key.substring(2);
-          allAttrs[cleanKey] = value;
-        }
-      }
-
-      // Store under artifact context with element type
+    // 1. Check if this is a REGISTERED ARTIFACT ROOT TAG (via registry)
+    //    e.g., api, proxy, sequence, endpoint, inboundEndpoint, data, etc.
+    const plugin = this.registry.getPluginForRootTag(tagName) || this.registry.getPluginForRootTag(localName);
+    if (plugin) {
+      // Extract metadata using the plugin's own extractor
+      const metadata = plugin.extractMetadata(tagName, attrs);
+      const allAttrs = this.extractAllAttributes(attrs);
       newContext.artifact = {
-        type: localName,
-        name: allAttrs.name || allAttrs.id || localName, // Ensure name is always present
+        type: metadata.type,
+        name: metadata.name,
+        xmlns: metadata.xmlns,
+        ...metadata.additionalInfo,
         ...allAttrs,
       };
     } else {
-      // DYNAMIC CONTEXT: For ALL other elements (including query, operation, filter, etc.)
-      // extract identifying attributes automatically
-      const identifyingAttrs = this.extractIdentifyingAttributes(attrs);
+      // 2. GENERIC CONTEXT: For ALL other elements
+      //    Capture ALL attributes (not just a whitelist) — any attribute could be
+      //    semantically important in arbitrary XML (e.g., methods, uri-template, href)
+      const allAttrs = this.extractAllAttributes(attrs);
 
-      // Only add to context if there are identifying attributes
-      if (Object.keys(identifyingAttrs).length > 0) {
-        // Use localName as the context key (e.g., "filter", "query", "operation", "Policy")
-        newContext[localName] = identifyingAttrs;
+      if (Object.keys(allAttrs).length > 0) {
+        // Has attributes → store as object (e.g., resource: { methods: 'POST', 'uri-template': '/deposit' })
+        newContext[localName] = allAttrs;
+      } else if (this.isSemanticBoundary(tagName, attrs)) {
+        // No attributes but is a structural/semantic boundary (e.g., <inSequence>, <outSequence>)
+        // → store tag name as string context so it appears in embeddings  
+        newContext[localName] = localName;
       }
     }
 
@@ -445,21 +408,19 @@ export class XMLChunker {
   }
 
   /**
-   * Check if an element is an artifact-level configuration element
-   * These are top-level integration components that have all-important attributes
+   * Extract ALL non-internal attributes from an element, cleaning prefixes.
+   * Used for artifact-level elements where every attribute is configuration-critical.
    */
-  private isArtifactConfigElement(tagName: string): boolean {
-    const artifactConfigElements = [
-      'inboundEndpoint',
-      'endpoint',
-      'messageStore',
-      'messageProcessor',
-      'template',
-      'localEntry',
-      'task',
-      'dataService',
-    ];
-    return artifactConfigElements.includes(tagName);
+  private extractAllAttributes(attrs: Record<string, string>): Record<string, any> {
+    const allAttrs: Record<string, any> = {};
+    for (const [key, value] of Object.entries(attrs)) {
+      if (!key.startsWith(':@') && !key.startsWith('@_')) {
+        allAttrs[key] = value;
+      } else if (key.startsWith('@_')) {
+        allAttrs[key.substring(2)] = value;
+      }
+    }
+    return allAttrs;
   }
 
   /**
@@ -571,40 +532,61 @@ export class XMLChunker {
   }
 
   /**
-   * Map XML tag to semantic type (extensible via patterns)
+   * Map XML tag to semantic type
+   * 
+   * STRATEGY: Registry lookup first, then structural heuristics, then fallback.
+   * No hardcoded tag-name-to-type mapping — works for arbitrary tags.
    */
   private mapToSemanticType(tagName: string): string {
     const localName = tagName.split(':').pop() || tagName;
 
-    if (localName === 'resource') return 'resource';
-    if (localName === 'api' || localName === 'proxy') return 'api';
-    if (localName.includes('Sequence') || localName === 'sequence') return 'sequence';
-    if (localName === 'filter' || localName === 'switch') return 'filter';
-    if (localName === 'payloadFactory') return 'payloadFactory';
-    if (localName === 'respond') return 'response';
-    if (localName === 'config') return 'dataConfig';
-    if (localName === 'query') return 'dataQuery';
-    if (localName === 'operation') return 'dataOperation';
-    if (localName === 'trigger') return 'trigger';
-    if (localName === 'property') return 'property';
+    // 1. Registry: Check if it's a known root tag → use plugin id as type
+    const plugin = this.registry.getPluginForRootTag(tagName) || this.registry.getPluginForRootTag(localName);
+    if (plugin) return plugin.id;
 
-    // Generic fallback
+    // 2. Registry: Check if it's a known mediator
+    if (this.registry.isMediatorTag(tagName) || this.registry.isMediatorTag(localName)) return 'mediator';
+
+    // 3. Registry: Check if it's a known semantic boundary
+    if (this.registry.isSemanticBoundary(tagName) || this.registry.isSemanticBoundary(localName)) return 'boundary';
+
+    // 4. Structural heuristics (tag-name-agnostic)
+    if (tagName.includes('.')) return 'connector';           // http.post, google.sheets, etc.
+    if (tagName.includes(':') && /^[A-Z]/.test(localName)) return 'policy';  // wsp:Policy, etc.
+    if (/^[A-Z]/.test(localName)) return 'configuration';   // CamelCase → config element
+
+    // 5. Generic fallback
     return 'component';
   }
 
   /**
-   * Infer semantic intent from tag and content
+   * Infer semantic intent from tag, attributes, and content
+   * 
+   * STRATEGY: Registry-aware checks first, then attribute-based heuristics.
+   * Falls back to 'processing' for truly unknown elements.
    */
   private inferIntent(tagName: string, attrs: Record<string, string>, content: string): string {
     const localName = tagName.split(':').pop() || tagName;
 
-    if (localName === 'filter' || localName === 'switch') return 'validation';
-    if (localName === 'payloadFactory' || localName === 'enrich') return 'transformation';
-    if (localName === 'call' || localName === 'send' || localName.startsWith('http.')) return 'delegation';
-    if (localName === 'respond') return 'response';
-    if (localName === 'faultSequence') return 'error-handling';
-    if (localName === 'query' || localName === 'operation') return 'data-access';
-    if (localName === 'config' || localName === 'property' || localName === 'trigger') return 'configuration';
+    // 1. Registry: Check known mediator patterns
+    if (this.registry.isMediatorTag(tagName) || this.registry.isMediatorTag(localName)) {
+      // Sub-classify mediators by common patterns
+      if (tagName.startsWith('http.') || localName === 'call' || localName === 'send') return 'delegation';
+      if (localName === 'enrich' || localName === 'payloadFactory' || localName === 'xslt') return 'transformation';
+      if (localName === 'log') return 'logging';
+      if (localName === 'respond' || localName === 'drop') return 'response';
+      return 'mediation';  // Generic mediator intent
+    }
+
+    // 2. Attribute-based heuristics (fully tag-name-agnostic)
+    const attrKeys = Object.keys(attrs).map(k => k.replace(/^@_/, ''));
+    if (attrKeys.includes('expression') || attrKeys.includes('xpath')) return 'transformation';
+    if (attrKeys.includes('key') || attrKeys.includes('target')) return 'delegation';
+    if (attrKeys.includes('source') || attrKeys.includes('regex')) return 'validation';
+
+    // 3. Content-based heuristics
+    if (content.includes('fault') || content.includes('error') || content.includes('Fault')) return 'error-handling';
+    if (content.includes('SELECT') || content.includes('INSERT') || content.includes('sql')) return 'data-access';
 
     return 'processing';
   }
@@ -612,15 +594,14 @@ export class XMLChunker {
   /**
    * Count tokens using the model's tokenizer
    */
-  private countTokens(content: string, metadata: string = ''): any {
+  private countTokens(content: string, metadata: string = ''): number {
     const fullText = metadata + ' ' + content;
 
     if (this.embedder && this.embedder.countTokens) {
       return this.embedder.countTokens(fullText);
     }
-    return 'hiiii'
-    // Fallback to character approximation
-    // return Math.ceil(fullText.length / 4);
+    // Fallback to character approximation (~4 chars per token)
+    return Math.ceil(fullText.length / 4);
   }
 
   /**
@@ -633,49 +614,50 @@ export class XMLChunker {
   }
 
   /**
-   * Format context metadata into text for token counting
-   * DYNAMIC APPROACH: Automatically formats any context field
+   * Format context metadata into text for token counting and embedding.
+   * FULLY GENERIC: Iterates all context keys uniformly.
+   * No hardcoded field-specific formatting.
    */
   private formatMetadata(context: SemanticContext): string {
     const parts: string[] = [];
 
-    // Well-known context fields (formatted specially for readability)
-    if (context.api?.name) parts.push(`API: ${context.api.name}`);
-    if (context.api?.context) parts.push(`Context: ${context.api.context}`);
-    if (context.resource?.method) parts.push(`Method: ${context.resource.method}`);
-    if (context.resource?.uriTemplate) parts.push(`URI: ${context.resource.uriTemplate}`);
-    if (context.sequence) {
-      const seqName = typeof context.sequence === 'string' ? context.sequence : context.sequence.name;
-      parts.push(`Sequence: ${seqName}`);
+    // 1. Artifact context (root-level metadata)
+    if (context.artifact) {
+      const { type, name, xmlns, ...rest } = context.artifact;
+      parts.push(`${this.formatContextKey(type)}: ${name}`);
+      // Include additional artifact attrs (context, transports, etc.)
+      const extraPairs = Object.entries(rest)
+        .filter(([k, v]) => v !== undefined && v !== null && v !== '' && k !== 'isCustom' && k !== 'rootTag' && k !== 'inferredFromPath')
+        .map(([k, v]) => `${k}=${v}`)
+        .join(' ');
+      if (extraPairs) parts.push(extraPairs);
     }
-    if (context.artifact?.name) parts.push(`${context.artifact.type}: ${context.artifact.name}`);
 
-    // DYNAMIC CONTEXT: Format ANY other context fields automatically
-    // This handles query, operation, filter, switch, throttle, policy, and ALL future elements
-    const knownKeys = new Set(['api', 'resource', 'sequence', 'artifact', 'references']);
+    // 2. DYNAMIC CONTEXT: Format ALL other context fields uniformly
+    //    This handles resource, sequence, filter, query, operation, and ANY arbitrary element
+    const skipKeys = new Set(['artifact', 'references']);
 
     for (const [key, value] of Object.entries(context)) {
-      if (knownKeys.has(key) || !value || typeof value !== 'object') {
-        continue;
-      }
+      if (skipKeys.has(key) || value === undefined || value === null) continue;
 
-      // Format this context field
       const formattedKey = this.formatContextKey(key);
 
-      // If the value is an object with identifying attributes, format them
-      if (typeof value === 'object' && !Array.isArray(value)) {
+      if (typeof value === 'string') {
+        // Simple string context (e.g., sequence name)
+        parts.push(`${formattedKey}: ${value}`);
+      } else if (typeof value === 'object' && !Array.isArray(value)) {
+        // Object context with attributes
         const attrPairs = Object.entries(value)
           .filter(([k, v]) => v !== undefined && v !== null && v !== '')
           .map(([k, v]) => `${k}=${v}`)
           .join(' ');
-
         if (attrPairs) {
           parts.push(`${formattedKey}: ${attrPairs}`);
         }
       }
     }
 
-    // References (if any)
+    // 3. References (if any)
     if (context.references && context.references.length > 0) {
       parts.push(`Uses: ${context.references.join(', ')}`);
     }
@@ -864,8 +846,25 @@ export class XMLChunker {
     const contextStr = this.formatMetadata(context);
     const tokens: string[] = contextStr ? [contextStr] : [];
 
+    // JSON BLOCK PROTECTION: Preserve JSON inside format/args tags before cleaning
+    // This prevents breaking structured payloads in embedding text
+    const jsonBlocks: string[] = [];
+    const jsonProtectedContent = content.replace(
+      /<(format|args)[^>]*>([\s\S]*?)<\/\1>/g,
+      (match, tag, jsonContent) => {
+        // Check if the content looks like JSON
+        const trimmed = jsonContent.trim();
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+          const placeholder = `__JSON_BLOCK_${jsonBlocks.length}__`;
+          jsonBlocks.push(`${tag} ${trimmed}`);
+          return placeholder;
+        }
+        return match;
+      }
+    );
+
     // Comprehensive XML preprocessing: Remove all angle brackets and create natural text
-    const cleanedContent = content
+    const cleanedContent = jsonProtectedContent
       // Extract tag names and attributes from opening tags: <tag attr="val"> → tag attr="val"
       .replace(/<([^>\/\s]+)([^>]*)>/g, ' $1 $2 ')
       // Remove closing tags: </tag> → (empty)
@@ -875,6 +874,8 @@ export class XMLChunker {
       // Clean up attribute formatting: attr="value" → attr=value
       .replace(/="([^"]*)"/g, '=$1')
       .replace(/='([^']*)'/g, '=$1')
+      // Restore JSON blocks
+      .replace(/__JSON_BLOCK_(\d+)__/g, (_, idx) => ` ${jsonBlocks[parseInt(idx)]} `)
       // Remove remaining special characters but preserve $, {, }, [, ] for expressions and paths
       .replace(/[^\w\s=\$\{\}\[\]\/\-\.,:@]/g, ' ')
       // Normalize whitespace
