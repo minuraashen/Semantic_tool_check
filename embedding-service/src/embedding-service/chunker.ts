@@ -406,6 +406,29 @@ export class XMLChunker {
       newContext.sequence = tagName;
     } else if (tagName === 'sequence' && (attrs.key || attrs['@_key'])) {
       newContext.sequence = attrs.key || attrs['@_key'];
+    } else if (this.isArtifactConfigElement(localName)) {
+      // ARTIFACT-LEVEL CONFIGURATION ELEMENTS:
+      // For inboundEndpoint, endpoint, messageStore, messageProcessor, etc.
+      // Capture ALL attributes since they're all configuration-critical
+      const allAttrs: Record<string, any> = {};
+
+      // Extract all non-internal attributes (skip :@, @_, etc.)
+      for (const [key, value] of Object.entries(attrs)) {
+        if (!key.startsWith(':@') && !key.startsWith('@_')) {
+          allAttrs[key] = value;
+        } else if (key.startsWith('@_')) {
+          // Convert @_name to name, @_class to class, etc.
+          const cleanKey = key.substring(2);
+          allAttrs[cleanKey] = value;
+        }
+      }
+
+      // Store under artifact context with element type
+      newContext.artifact = {
+        type: localName,
+        name: allAttrs.name || allAttrs.id || localName, // Ensure name is always present
+        ...allAttrs,
+      };
     } else {
       // DYNAMIC CONTEXT: For ALL other elements (including query, operation, filter, etc.)
       // extract identifying attributes automatically
@@ -419,6 +442,24 @@ export class XMLChunker {
     }
 
     return newContext;
+  }
+
+  /**
+   * Check if an element is an artifact-level configuration element
+   * These are top-level integration components that have all-important attributes
+   */
+  private isArtifactConfigElement(tagName: string): boolean {
+    const artifactConfigElements = [
+      'inboundEndpoint',
+      'endpoint',
+      'messageStore',
+      'messageProcessor',
+      'template',
+      'localEntry',
+      'task',
+      'dataService',
+    ];
+    return artifactConfigElements.includes(tagName);
   }
 
   /**
@@ -843,7 +884,7 @@ export class XMLChunker {
     // Split into meaningful tokens
     const contentTokens = cleanedContent
       .split(/\s+/)
-      .filter(t => t.length > 1 && t.length < 100); // Allow longer tokens for expressions like ${payload.userId}
+      .filter(t => (t.length > 1 || /^\d+$/.test(t)) && t.length < 100); // Preserve numeric values (e.g. 0, 1) and longer tokens
 
     tokens.push(...contentTokens);
 

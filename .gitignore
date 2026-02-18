@@ -8,4 +8,6 @@ results-automated.csv
 results-automated.json
 results.csv
 ground-truth.json
+*.json
+*.csv
 

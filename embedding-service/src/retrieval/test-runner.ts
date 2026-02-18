@@ -22,10 +22,10 @@ import { computeMetrics, computeAverageMetrics, MetricsResult } from './metrics'
 
 // ── Paths ──────────────────────────────────────────────────────
 const rootDir = path.resolve(__dirname, '../../');
-const groundTruthPath = path.resolve(rootDir, '../ground-truth.json');
+const groundTruthPath = path.resolve(rootDir, '../ground-truth-new-256.json');
 const dbPath = path.resolve(rootDir, 'data/embeddings.db');
-const csvOutputPath = path.resolve(rootDir, '../results-automated.csv');
-const jsonOutputPath = path.resolve(rootDir, '../results-automated.json');
+const csvOutputPath = path.resolve(rootDir, '../results-automated-new-256.csv');
+const jsonOutputPath = path.resolve(rootDir, '../results-automated-new-256.json');
 
 // ── K values to test at ────────────────────────────────────────
 const K_VALUES = [10, 15, 20];

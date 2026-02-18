@@ -18,9 +18,9 @@ import Database from 'better-sqlite3';
 
 // ── Paths ──────────────────────────────────────────────────────
 const rootDir = path.resolve(__dirname, '../../');
-const csvPath = path.resolve(rootDir, '../results.csv');
+const csvPath = path.resolve(rootDir, '../gt_dataset.csv');
 const dbPath = path.resolve(rootDir, 'data/embeddings.db');
-const outputPath = path.resolve(rootDir, '../ground-truth.json');
+const outputPath = path.resolve(rootDir, '../ground-truth-new-256.json');
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -33,7 +33,7 @@ interface GroundTruthFile {
 interface GroundTruthQuery {
     id: string;
     text: string;
-    complexity: string;
+    // complexity: string;
     files: GroundTruthFile[];
     totalRelevantChunks: number;
     allRelevantChunkIds: number[];
@@ -56,17 +56,17 @@ interface GroundTruthDataset {
  */
 function parseCSV(csvContent: string): {
     text: string;
-    complexity: string;
+    // complexity: string;
     files: { fileName: string; lineRange: string; chunkCount: string }[];
 }[] {
     const lines = csvContent.split('\n').map(l => l.replace(/\r$/, ''));
 
     // Skip the 2 header rows
-    const dataLines = lines.slice(2).filter(l => l.trim().length > 0);
+    const dataLines = lines.slice(1).filter(l => l.trim().length > 0);
 
     const queries: {
         text: string;
-        complexity: string;
+        // complexity: string;
         files: { fileName: string; lineRange: string; chunkCount: string }[];
     }[] = [];
 
@@ -77,16 +77,16 @@ function parseCSV(csvContent: string): {
         const fields = parseCSVLine(line);
 
         const queryField = fields[0]?.replace(/^"+|"+$/g, '').trim();
-        const complexity = fields[1]?.trim();
-        const fileName = fields[2]?.trim();
-        const lineRange = fields[3]?.trim();
-        const chunkCount = fields[4]?.trim();
+        // const complexity = fields[1]?.trim();
+        const fileName = fields[1]?.trim();
+        const lineRange = fields[2]?.trim();
+        const chunkCount = fields[3]?.trim();
 
         if (queryField) {
             // New query row
             currentQuery = {
                 text: queryField,
-                complexity: complexity || 'unknown',
+                // complexity: complexity || 'unknown',
                 files: [],
             };
             queries.push(currentQuery);
@@ -217,7 +217,7 @@ function main() {
         const q = parsedQueries[i];
         const queryId = `Q${String(i + 1).padStart(3, '0')}`;
 
-        console.log(`  ${queryId}: "${q.text}" (${q.complexity})`);
+        console.log(`  ${queryId}: "${q.text}"`);
 
         const files: GroundTruthFile[] = [];
         const allChunkIds: number[] = [];
@@ -248,7 +248,7 @@ function main() {
         groundTruthQueries.push({
             id: queryId,
             text: q.text,
-            complexity: q.complexity,
+            // complexity: q.complexity,
             files,
             totalRelevantChunks: uniqueChunkIds.length,
             allRelevantChunkIds: uniqueChunkIds,
