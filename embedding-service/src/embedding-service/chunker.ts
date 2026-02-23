@@ -149,7 +149,7 @@ export class XMLChunker {
    * Queries the artifact registry instead of hardcoded lists.
    * Falls back to heuristics for unknown tags.
    */
-  private isSemanticBoundary(tagName: string, attrs: Record<string, string> = {}, element?: any): boolean {
+  private isSemanticBoundary(tagName: string, attrs: Record<string, string> = {}, element?: any, parentTagName?: string): boolean {
     const localName = tagName.split(':').pop() || tagName;
 
     // 1. Registry Lookup (Explicit)
@@ -201,6 +201,15 @@ export class XMLChunker {
     // Rule B: Structural Complexity (Has multiple distinct children)
     // If it contains logic/structure, it's likely a container we want to chunk
     if (element && this.hasComplexStructure(element)) {
+      return true;
+    }
+
+    // 7. Connector Child Rule (General)
+    // If the immediate parent is a connector/mediator with a dot in its tag name
+    // (e.g., <ai.agent>, <http.post>, <email.send>), ALL direct children are
+    // configuration properties of that connector and should be chunked together.
+    // This is purely structural — no hardcoded tag names anywhere.
+    if (parentTagName && parentTagName.includes('.')) {
       return true;
     }
 
@@ -305,7 +314,8 @@ export class XMLChunker {
     filePath: string,
     chunks: XMLChunk[],
     parentChunkId: number | null,
-    context: SemanticContext
+    context: SemanticContext,
+    parentTagName?: string  // Tag name of the element that triggered this descent
   ): void {
     if (!Array.isArray(node)) return;
 
@@ -323,8 +333,9 @@ export class XMLChunker {
       const updatedContext = this.updateContext(tagName, nodeAttrs, context);
 
       // Check if this is a chunkable node
+      // Pass parentTagName so Rule 7 (Connector Child) can fire for scalar children of connectors
       const isChunkable = this.isResourceType(tagName) ||
-        this.isSemanticBoundary(tagName, nodeAttrs, element) ||
+        this.isSemanticBoundary(tagName, nodeAttrs, element, parentTagName) ||
         this.isMediatorType(tagName);
 
       if (isChunkable) {
@@ -340,10 +351,10 @@ export class XMLChunker {
           // Subtree fits → Emit chunk with parent context (not updatedContext)
           this.createChunk(tagName, nodeAttrs, content, range, filePath, chunks, parentChunkId, context);
         } else {
-          // Subtree too large → Descend to children with updated context
+          // Subtree too large → Descend to children with updated context, passing THIS tag as parent
           if (Array.isArray(element)) {
             const childChunksBefore = chunks.length;
-            this.processNode(element, lines, filePath, chunks, parentChunkId, updatedContext);
+            this.processNode(element, lines, filePath, chunks, parentChunkId, updatedContext, tagName);
 
             // OVERSIZED LEAF FALLBACK: If no children produced any chunks,
             // this is a leaf-like node that exceeds maxTokens.
@@ -359,8 +370,19 @@ export class XMLChunker {
           }
         }
       } else if (Array.isArray(element)) {
-        // Non-chunkable nodes → just traverse with updated context
-        this.processNode(element, lines, filePath, chunks, parentChunkId, updatedContext);
+        // Non-chunkable container → traverse children, passing THIS tag as the parent
+        this.processNode(element, lines, filePath, chunks, parentChunkId, updatedContext, tagName);
+      } else if (typeof element === 'string' && element.trim().length > 0 && parentTagName && parentTagName.includes('.')) {
+        // LEAF TEXT NODE inside a connector (e.g., <role> inside <ai.agent>):
+        // The parent connector made this node chunkable via Rule 7, but fast-xml-parser
+        // returns the text content as a raw string, not an array — so the normal
+        // isChunkable path never fires for it. Handle it explicitly here.
+        // We find its range and emit a chunk so no config property is ever silently dropped.
+        const range = this.findElementRange(tagName, tagName, lines);
+        const content = this.extractContent(lines, range);
+        if (content.trim().length > 0) {
+          this.createChunk(tagName, nodeAttrs, content, range, filePath, chunks, parentChunkId, context);
+        }
       }
     }
   }

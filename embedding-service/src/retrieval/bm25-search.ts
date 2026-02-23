@@ -148,9 +148,9 @@ export class BM25SearchService {
    *  - Return empty string if nothing useful remains
    */
   private sanitizeQuery(raw: string): string {
-    // 1. Remove FTS5 special characters
+    // 1. Remove all non-alphanumeric characters (keeps spaces)
     let q = raw
-      .replace(/[":{}()\^*]/g, ' ')
+      .replace(/[^a-zA-Z0-9\s]/g, ' ')
       // 2. Remove FTS5 boolean operators when they appear as whole words
       .replace(/\b(NEAR|OR|AND|NOT)\b/gi, ' ')
       // 3. Collapse whitespace

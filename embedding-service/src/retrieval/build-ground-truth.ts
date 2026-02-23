@@ -18,9 +18,9 @@ import Database from 'better-sqlite3';
 
 // ── Paths ──────────────────────────────────────────────────────
 const rootDir = path.resolve(__dirname, '../../');
-const csvPath = path.resolve(rootDir, '../gt_dataset.csv');
+const csvPath = path.resolve(rootDir, '../final-ground-truth.csv');
 const dbPath = path.resolve(rootDir, 'data/embeddings.db');
-const outputPath = path.resolve(rootDir, '../ground-truth-new-256.json');
+const outputPath = path.resolve(rootDir, '../final-ground-truth.json');
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -33,7 +33,8 @@ interface GroundTruthFile {
 interface GroundTruthQuery {
     id: string;
     text: string;
-    // complexity: string;
+    category: string;
+    subtype: string;
     files: GroundTruthFile[];
     totalRelevantChunks: number;
     allRelevantChunkIds: number[];
@@ -52,22 +53,24 @@ interface GroundTruthDataset {
 
 /**
  * Parse the multi-row CSV format where a single query can span multiple rows
- * (one per relevant file). The Query column is only populated on the first row.
+ * (one per relevant file). The Query column is populated on every row.
  */
 function parseCSV(csvContent: string): {
     text: string;
-    // complexity: string;
-    files: { fileName: string; lineRange: string; chunkCount: string }[];
+    category: string;
+    subtype: string;
+    files: { fileName: string; lineRange: string; }[];
 }[] {
     const lines = csvContent.split('\n').map(l => l.replace(/\r$/, ''));
 
-    // Skip the 2 header rows
+    // Skip the 1 header row (it was 2 before, but looking at file content it seems just 1: "query,xml_file,line_number_range,query_category,query_subtype")
     const dataLines = lines.slice(1).filter(l => l.trim().length > 0);
 
     const queries: {
         text: string;
-        // complexity: string;
-        files: { fileName: string; lineRange: string; chunkCount: string }[];
+        category: string;
+        subtype: string;
+        files: { fileName: string; lineRange: string; }[];
     }[] = [];
 
     let currentQuery: typeof queries[0] | null = null;
@@ -76,27 +79,29 @@ function parseCSV(csvContent: string): {
         // Parse CSV respecting quoted fields
         const fields = parseCSVLine(line);
 
-        const queryField = fields[0]?.replace(/^"+|"+$/g, '').trim();
-        // const complexity = fields[1]?.trim();
-        const fileName = fields[1]?.trim();
-        const lineRange = fields[2]?.trim();
-        const chunkCount = fields[3]?.trim();
+        const queryText = fields[0]?.replace(/^"+|"+$/g, '').trim();
+        const category = fields[1]?.trim() || 'unknown';
+        const subtype = fields[2]?.trim() || 'unknown';
+        const fileName = fields[3]?.trim();
+        const lineRange = fields[4]?.trim();
 
-        if (queryField) {
-            // New query row
-            currentQuery = {
-                text: queryField,
-                // complexity: complexity || 'unknown',
-                files: [],
-            };
-            queries.push(currentQuery);
+        if (queryText) {
+            // Check if this is a continuation of the current query or a new one
+            if (!currentQuery || currentQuery.text !== queryText) {
+                currentQuery = {
+                    text: queryText,
+                    category,
+                    subtype,
+                    files: [],
+                };
+                queries.push(currentQuery);
+            }
         }
 
         if (currentQuery && fileName) {
             currentQuery.files.push({
                 fileName,
                 lineRange: lineRange || 'All lines',
-                chunkCount: chunkCount || '',
             });
         }
     }
@@ -248,7 +253,8 @@ function main() {
         groundTruthQueries.push({
             id: queryId,
             text: q.text,
-            // complexity: q.complexity,
+            category: q.category,
+            subtype: q.subtype,
             files,
             totalRelevantChunks: uniqueChunkIds.length,
             allRelevantChunkIds: uniqueChunkIds,
