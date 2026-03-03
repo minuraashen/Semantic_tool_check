@@ -1,6 +1,6 @@
 import * as fs from 'fs';
+import { createHash } from 'crypto';
 import { XMLParser } from 'fast-xml-parser';
-import { computeChunkHash } from '../db/merkle';
 import { ArtifactRegistry, artifactRegistry, ArtifactMetadata } from './artifact-registry';
 import { config } from '../config';
 
@@ -54,6 +54,25 @@ export interface SemanticContext {
   // DYNAMIC: All element-level contexts are stored here automatically
   // Examples: { resource: { method: 'GET', uriTemplate: '/' }, filter: { source: '...' } }
   [key: string]: any;
+}
+
+/**
+ * Compute a deterministic content hash for a chunk.
+ * Hashes raw XML + semantic type + intent + context.
+ * Stored as `content_hash` in the DB — drives incremental update logic:
+ * unchanged hash → reuse embedding, changed hash → re-embed.
+ */
+function computeChunkHash(
+  xmlContent: string,
+  metadata: { type: string; intent: string; context: Record<string, any> }
+): string {
+  const hashInput = JSON.stringify({
+    xml: xmlContent,
+    type: metadata.type,
+    intent: metadata.intent,
+    context: metadata.context,
+  });
+  return createHash('sha256').update(hashInput).digest('hex');
 }
 
 interface LineRange {
