@@ -339,13 +339,17 @@ export class XMLChunker {
         this.isMediatorType(tagName);
 
       if (isChunkable) {
-        // Token gating: Check if subtree fits within limit
-        const range = this.findElementRange(tagName, this.getNodeName(tagName, element), lines);
+        // Token gating: Check if subtree fits within limit.
+        // Gate on the actual embeddingText (cleaned XML + context) — the same text that will be
+        // embedded — so the token limit is checked consistently. Raw XML over-counts because
+        // tag brackets, closing tags, and quote characters are stripped during cleaning.
+        const resourceName = this.getNodeName(tagName, element);
+        const range = this.findElementRange(tagName, resourceName, lines);
         const content = this.extractContent(lines, range);
         // CRITICAL: Use parent context (not updatedContext) to avoid duplication
         // The chunk's own attributes are already in the content, so we should NOT include them in metadata
-        const metadata = this.formatMetadata(context);
-        const tokenCount = this.countTokens(content, metadata);
+        const embeddingText = this.createEmbeddingText(tagName, resourceName, content, nodeAttrs, context);
+        const tokenCount = this.countTokens(embeddingText);
 
         if (tokenCount <= this.maxTokens) {
           // Subtree fits → Emit chunk with parent context (not updatedContext)
@@ -446,50 +450,6 @@ export class XMLChunker {
     return allAttrs;
   }
 
-  /**
-   * Extract identifying attributes from any element
-   * These are attributes that help identify or describe what the element does
-   */
-  private extractIdentifyingAttributes(attrs: Record<string, string>): Record<string, any> {
-    const identifyingAttrs: Record<string, any> = {};
-
-    // Common identifying attribute patterns
-    const identifyingKeys = [
-      'name', '@_name',
-      'id', '@_id',
-      'key', '@_key',
-      'xpath', '@_xpath',
-      'source', '@_source',
-      'regex', '@_regex',
-      'type', '@_type',
-      'expression', '@_expression',
-      'value', '@_value',
-      'media-type', '@_media-type',
-      'category', '@_category',
-      'level', '@_level',
-      'target', '@_target',
-      'uri', '@_uri',
-      'method', '@_method',
-    ];
-
-    // Extract all identifying attributes that are present
-    for (const key of identifyingKeys) {
-      if (attrs[key]) {
-        // Remove the '@_' prefix for cleaner context keys
-        const cleanKey = key.startsWith('@_') ? key.substring(2) : key;
-        identifyingAttrs[cleanKey] = attrs[key];
-      }
-    }
-
-    // Also capture namespaced attributes (e.g., throttle:type)
-    for (const [key, value] of Object.entries(attrs)) {
-      if (key.includes(':') && !key.startsWith(':@')) {
-        identifyingAttrs[key] = value;
-      }
-    }
-
-    return identifyingAttrs;
-  }
 
   /**
    * Create a chunk from the current node
@@ -912,7 +872,6 @@ export class XMLChunker {
 
     tokens.push(...contentTokens);
 
-    // Increased limit from 150 to 200 for better context representation
-    return tokens.slice().join(' ');
+    return tokens.join(' ');
   }
 }

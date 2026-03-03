@@ -3,7 +3,7 @@ import { XMLChunker } from './chunker';
 import { Embedder } from './embedder';
 import { SQLiteDB, ChunkMetadata } from '../db/sqlite';
 import { ArtifactRegistry, artifactRegistry } from './artifact-registry';
-import { MerkleLeaf, buildMerkleTree, findChangedLeaves } from '../db/merkle';
+
 
 /**
  * Pipeline with Incremental Embedding and Plugin Support
