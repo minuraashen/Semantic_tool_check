@@ -38,7 +38,6 @@ async function main() {
     console.log(`${idx + 1}. [Score: ${result.similarity.toFixed(4)}]`);
     console.log(`   📄 File: ${result.filePath}`);
     console.log(`   📍 Lines: ${result.startLine}-${result.endLine}`);
-    console.log(`   🏷️  Type: ${result.semanticType || 'N/A'} | Intent: ${result.semanticIntent || 'N/A'}`);
     console.log(`   🔗 Context: ${JSON.stringify(result.context)}`);
 
     if (result.referencedSequences && result.referencedSequences.length > 0) {

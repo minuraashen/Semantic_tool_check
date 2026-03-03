@@ -12,9 +12,6 @@ export interface RankedChunk {
   rank: number;                     // 1-based position in result list
   score: number;                    // similarity (vector) or bm25Score (BM25)
   filePath: string;
-  resourceName: string;
-  semanticType: string;
-  semanticIntent: string;
 }
 
 export interface ComparisonResult {
@@ -123,9 +120,6 @@ function toRankedChunk(
     rank,
     score,
     filePath: r.filePath,
-    resourceName: r.resourceName,
-    semanticType: r.semanticType,
-    semanticIntent: r.semanticIntent,
   };
 }
 
@@ -141,9 +135,8 @@ export function printComparison(result: ComparisonResult): void {
   console.log('─'.repeat(50));
   for (const r of result.vector_results) {
     console.log(
-      `  #${r.rank}  [score: ${r.score.toFixed(4)}]  ${r.semanticType} | ${r.semanticIntent}`
+      `  #${r.rank}  [score: ${r.score.toFixed(4)}]  ${r.filePath}`
     );
-    console.log(`       ${r.resourceName}  (${r.filePath})`);
   }
 
   console.log('');
@@ -153,9 +146,8 @@ export function printComparison(result: ComparisonResult): void {
   console.log('─'.repeat(50));
   for (const r of result.bm25_results) {
     console.log(
-      `  #${r.rank}  [score: ${r.score.toFixed(4)}]  ${r.semanticType} | ${r.semanticIntent}`
+      `  #${r.rank}  [score: ${r.score.toFixed(4)}]  ${r.filePath}`
     );
-    console.log(`       ${r.resourceName}  (${r.filePath})`);
   }
 
   console.log('');

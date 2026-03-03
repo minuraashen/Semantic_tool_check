@@ -17,17 +17,12 @@ import { glob } from 'glob';
 
 interface ExportedChunk {
     filePath: string;
-    resourceName: string;
-    resourceType: string;
     chunkType: string;
     chunkIndex: number;
     startLine: number;
     endLine: number;
     content: string;
-    parentChunkId: number | null;
     embeddingText: string;
-    semanticType: string;
-    semanticIntent: string;
     contentHash: string;
     context: any;
     isSequenceDefinition: boolean;
@@ -95,17 +90,12 @@ async function main() {
             for (const chunk of chunks) {
                 const exportChunk: ExportedChunk = {
                     filePath: chunk.filePath,
-                    resourceName: chunk.resourceName,
-                    resourceType: chunk.resourceType,
                     chunkType: chunk.chunkType,
                     chunkIndex: chunk.chunkIndex,
                     startLine: chunk.startLine,
                     endLine: chunk.endLine,
                     content: chunk.content,
-                    parentChunkId: chunk.parentChunkId,
                     embeddingText: chunk.embeddingText,
-                    semanticType: chunk.semanticType,
-                    semanticIntent: chunk.semanticIntent,
                     contentHash: chunk.contentHash,
                     context: chunk.context,
                     isSequenceDefinition: chunk.isSequenceDefinition ?? false,

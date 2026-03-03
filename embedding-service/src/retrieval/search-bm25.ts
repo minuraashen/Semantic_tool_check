@@ -60,7 +60,6 @@ async function main() {
     console.log(`${idx + 1}. [BM25 Score: ${result.bm25Score.toFixed(4)}]`);
     console.log(`   📄 File: ${result.filePath}`);
     console.log(`   📍 Lines: ${result.startLine}-${result.endLine}`);
-    console.log(`   🏷️  Type: ${result.semanticType} | Intent: ${result.semanticIntent}`);
     console.log(`   🔗 Context: ${JSON.stringify(result.context)}`);
 
     if (result.referencedSequences && result.referencedSequences.length > 0) {

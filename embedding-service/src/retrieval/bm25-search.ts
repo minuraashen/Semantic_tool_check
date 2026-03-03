@@ -12,15 +12,10 @@ export interface BM25Result {
   id: number;
   chunkId: number;
   filePath: string;
-  resourceName: string;
-  resourceType: string;
   chunkType: string;
   startLine: number;
   endLine: number;
   bm25Score: number;
-  parentChunkId: number | null;
-  semanticType: string;
-  semanticIntent: string;
   context: any;
   sequenceKey?: string;
   isSequenceDefinition?: boolean;
@@ -105,15 +100,10 @@ export class BM25SearchService {
         id: row.id,
         chunkId: ftsRow.chunk_id,
         filePath: row.file_path,
-        resourceName: row.resource_name,
-        resourceType: row.resource_type,
         chunkType: row.chunk_type,
         startLine: row.start_line,
         endLine: row.end_line,
-        bm25Score: -ftsRow.score, // negate so higher = better
-        parentChunkId: row.parent_chunk_id,
-        semanticType: row.semantic_type,
-        semanticIntent: row.semantic_intent,
+        bm25Score: -ftsRow.score,
         context: JSON.parse(row.context_json),
         sequenceKey: row.sequence_key,
         isSequenceDefinition: row.is_sequence_definition === 1,

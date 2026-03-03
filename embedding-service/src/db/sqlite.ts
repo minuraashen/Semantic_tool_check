@@ -5,82 +5,14 @@ import * as path from 'path';
 export interface ChunkMetadata {
   filePath: string;
   fileHash: string;
-  resourceName: string;
-  resourceType: string;
   chunkType: string;
   chunkIndex: number;
   startLine: number;
   endLine: number;
-  parentChunkId: number | null;
   timestamp: number;
-  // NEW: Merkle tree and semantic metadata
   contentHash: string;
-  semanticType: string;
-  semanticIntent: string;
-  context: {
-    api?: {
-      name?: string;
-      context?: string;
-      xmlns?: string;
-    };
-    resource?: {
-      method?: string;
-      uriTemplate?: string;
-    };
-    sequence?: string | {
-      name?: string;
-      xmlns?: string;
-    };
-    localEntry?: {
-      key?: string;
-      xmlns?: string;
-    };
-    endpoint?: {
-      name?: string;
-      xmlns?: string;
-    };
-    template?: {
-      name?: string;
-      xmlns?: string;
-    };
-    // NEW: Support for additional artifact types
-    proxyService?: {
-      name?: string;
-      transports?: string;
-      xmlns?: string;
-    };
-    messageStore?: {
-      name?: string;
-      type?: string;
-      xmlns?: string;
-    };
-    messageProcessor?: {
-      name?: string;
-      type?: string;
-      messageStore?: string;
-      xmlns?: string;
-    };
-    dataService?: {
-      name?: string;
-      enableBatchRequests?: boolean;
-      xmlns?: string;
-    };
-    query?: {
-      id?: string;
-      useConfig?: string;
-    };
-    operation?: {
-      name?: string;
-      callsQuery?: string;
-    };
-    task?: {
-      name?: string;
-      trigger?: string;
-      xmlns?: string;
-    };
-    references?: string[];
-  };
-  // NEW: Cross-file sequence tracking
+  context: Record<string, any>;
+  // Cross-file sequence tracking
   sequenceKey?: string;
   isSequenceDefinition?: boolean;
   referencedSequences?: string[];
@@ -137,28 +69,23 @@ export class SQLiteDB {
   insertChunk(metadata: ChunkMetadata, embedding: Float32Array, embeddingText?: string): number {
     const stmt = this.db.prepare(`
       INSERT INTO chunks (
-        file_path, file_hash, resource_name, resource_type, chunk_type,
-        chunk_index, start_line, end_line, parent_chunk_id, embedding, timestamp,
-        content_hash, semantic_type, semantic_intent, context_json,
+        file_path, file_hash, chunk_type,
+        chunk_index, start_line, end_line, embedding, timestamp,
+        content_hash, context_json,
         sequence_key, is_sequence_definition, referenced_sequences
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
       metadata.filePath,
       metadata.fileHash,
-      metadata.resourceName,
-      metadata.resourceType,
       metadata.chunkType,
       metadata.chunkIndex,
       metadata.startLine,
       metadata.endLine,
-      metadata.parentChunkId,
       Buffer.from(embedding.buffer),
       metadata.timestamp,
       metadata.contentHash,
-      metadata.semanticType,
-      metadata.semanticIntent,
       JSON.stringify(metadata.context),
       metadata.sequenceKey || null,
       metadata.isSequenceDefinition ? 1 : 0,
@@ -178,28 +105,23 @@ export class SQLiteDB {
   updateChunk(id: number, metadata: ChunkMetadata, embedding: Float32Array, embeddingText?: string): void {
     const stmt = this.db.prepare(`
       UPDATE chunks SET
-        file_hash = ?, resource_name = ?, resource_type = ?, chunk_type = ?,
-        chunk_index = ?, start_line = ?, end_line = ?, parent_chunk_id = ?,
+        file_hash = ?, chunk_type = ?,
+        chunk_index = ?, start_line = ?, end_line = ?,
         embedding = ?, timestamp = ?,
-        content_hash = ?, semantic_type = ?, semantic_intent = ?, context_json = ?,
+        content_hash = ?, context_json = ?,
         sequence_key = ?, is_sequence_definition = ?, referenced_sequences = ?
       WHERE id = ?
     `);
 
     stmt.run(
       metadata.fileHash,
-      metadata.resourceName,
-      metadata.resourceType,
       metadata.chunkType,
       metadata.chunkIndex,
       metadata.startLine,
       metadata.endLine,
-      metadata.parentChunkId,
       Buffer.from(embedding.buffer),
       metadata.timestamp,
       metadata.contentHash,
-      metadata.semanticType,
-      metadata.semanticIntent,
       JSON.stringify(metadata.context),
       metadata.sequenceKey || null,
       metadata.isSequenceDefinition ? 1 : 0,
@@ -345,18 +267,13 @@ export class SQLiteDB {
       id: row.id,
       filePath: row.file_path,
       fileHash: row.file_hash,
-      resourceName: row.resource_name,
-      resourceType: row.resource_type,
       chunkType: row.chunk_type,
       chunkIndex: row.chunk_index,
       startLine: row.start_line,
       endLine: row.end_line,
-      parentChunkId: row.parent_chunk_id,
       timestamp: row.timestamp,
       embedding: row.embedding,
       contentHash: row.content_hash,
-      semanticType: row.semantic_type,
-      semanticIntent: row.semantic_intent,
       context: JSON.parse(row.context_json),
       sequenceKey: row.sequence_key,
       isSequenceDefinition: row.is_sequence_definition === 1,

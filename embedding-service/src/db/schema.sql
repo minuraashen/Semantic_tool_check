@@ -1,24 +1,17 @@
--- Code chunks with embeddings and Merkle tree support
--- PHASE 4: Added content_hash, semantic_type, semantic_intent, context_json
--- PHASE 8: Added sequence_key, is_sequence_definition, referenced_sequences for cross-file tracking
+-- Code chunks with embeddings
+-- context_json holds all artifact/element metadata as JSON
 CREATE TABLE IF NOT EXISTS chunks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   file_path TEXT NOT NULL,
   file_hash TEXT NOT NULL,
-  resource_name TEXT NOT NULL,
-  resource_type TEXT NOT NULL,
   chunk_type TEXT NOT NULL,
   chunk_index INTEGER NOT NULL,
   start_line INTEGER NOT NULL,
   end_line INTEGER NOT NULL,
   embedding BLOB NOT NULL,
-  parent_chunk_id INTEGER,            -- Reference to parent chunk
   timestamp INTEGER NOT NULL,
-  -- Merkle tree and semantic metadata
-  content_hash TEXT NOT NULL,         -- SHA-256 hash of content + metadata (for change detection)
-  semantic_type TEXT NOT NULL,        -- filter | payloadFactory | sequence | resource | api
-  semantic_intent TEXT NOT NULL,      -- validation | transformation | delegation | response
-  context_json TEXT NOT NULL,         -- JSON: {api, method, uri, resource, sequence}
+  content_hash TEXT NOT NULL,         -- SHA-256 hash of content + context (for change detection)
+  context_json TEXT NOT NULL,         -- JSON: full semantic context
   -- Cross-file sequence tracking
   sequence_key TEXT,                  -- "CreateBookingSequence" (if this IS a sequence definition)
   is_sequence_definition INTEGER DEFAULT 0,  -- 1 if standalone sequence file
@@ -27,9 +20,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 CREATE INDEX IF NOT EXISTS idx_file_path ON chunks(file_path);
 CREATE INDEX IF NOT EXISTS idx_file_hash ON chunks(file_hash);
-CREATE INDEX IF NOT EXISTS idx_resource_type ON chunks(resource_type);
 CREATE INDEX IF NOT EXISTS idx_content_hash ON chunks(content_hash);
-CREATE INDEX IF NOT EXISTS idx_semantic_type ON chunks(semantic_type);
 CREATE INDEX IF NOT EXISTS idx_sequence_key ON chunks(sequence_key);
 CREATE INDEX IF NOT EXISTS idx_is_sequence_definition ON chunks(is_sequence_definition);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_chunk ON chunks(file_path, chunk_index, start_line, end_line);

@@ -45,9 +45,6 @@ async function main() {
 
         console.log(`\n🔹 Chunk #${chunk.chunkIndex} (${chunk.chunkType})`);
         console.log(`   Lines: ${chunk.startLine}-${chunk.endLine}`);
-        console.log(`   Resource: ${chunk.resourceName}`);
-        console.log(`   Semantic Type: ${chunk.semanticType}`);
-        console.log(`   Semantic Intent: ${chunk.semanticIntent}`);
         console.log(`   Context: ${JSON.stringify(chunk.context)}`);
 
         // Show raw XML content (first 150 chars)

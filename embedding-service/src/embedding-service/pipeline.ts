@@ -86,30 +86,19 @@ export class Pipeline {
     // Track which existing chunks were matched (for cleanup of removed chunks)
     const matchedChunkIds = new Set<number>();
 
-    const chunkIndexToDbId = new Map<number, number>();
     let reusedCount = 0;
     let embeddedCount = 0;
 
     for (const chunk of chunks) {
-      let parentDbId: number | null = null;
-      if (chunk.parentChunkId !== null && chunkIndexToDbId.has(chunk.parentChunkId)) {
-        parentDbId = chunkIndexToDbId.get(chunk.parentChunkId)!;
-      }
-
       const metadata: ChunkMetadata = {
         filePath: chunk.filePath,
         fileHash,
-        resourceName: chunk.resourceName,
-        resourceType: chunk.resourceType,
         chunkType: chunk.chunkType,
         chunkIndex: chunk.chunkIndex,
         startLine: chunk.startLine,
         endLine: chunk.endLine,
-        parentChunkId: parentDbId,
         timestamp: Date.now(),
         contentHash: chunk.contentHash,
-        semanticType: chunk.semanticType,
-        semanticIntent: chunk.semanticIntent,
         context: chunk.context,
         sequenceKey: chunk.sequenceKey,
         isSequenceDefinition: chunk.isSequenceDefinition,
@@ -122,29 +111,23 @@ export class Pipeline {
 
       let embedding: Float32Array;
       let dbId: number;
-
       if (existingChunk && existingChunk.contentHash === chunk.contentHash) {
-        // Existing chunk with same content - reuse embedding and update metadata
         embedding = new Float32Array(existingChunk.embedding.buffer);
         this.db.updateChunk(existingChunk.id, metadata, embedding, chunk.embeddingText);
         dbId = existingChunk.id;
         matchedChunkIds.add(dbId);
         reusedCount++;
       } else if (existingChunk) {
-        // Existing chunk but content changed - generate new embedding and update
         embedding = await this.embedder.embed(chunk.embeddingText);
         this.db.updateChunk(existingChunk.id, metadata, embedding, chunk.embeddingText);
         dbId = existingChunk.id;
         matchedChunkIds.add(dbId);
         embeddedCount++;
       } else {
-        // New chunk - generate embedding and insert
         embedding = await this.embedder.embed(chunk.embeddingText);
         dbId = this.db.insertChunk(metadata, embedding, chunk.embeddingText);
         embeddedCount++;
       }
-
-      chunkIndexToDbId.set(chunk.chunkIndex, dbId);
 
       // Link all artifact references
       if (chunk.referencedSequences && chunk.referencedSequences.length > 0) {
